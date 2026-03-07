@@ -35,6 +35,7 @@ def evaluate_model(model, tokenizer, scenarios, label="Model"):
 
     total_rc_correct = 0
     total_fix_correct = 0
+    total_justified = 0
     total_steps = 0
     total_reward = 0.0
     n = 0
@@ -88,26 +89,31 @@ def evaluate_model(model, tokenizer, scenarios, label="Model"):
                 total_rc_correct += 1
             if last_submit.get("fix") == sc.correct_fix:
                 total_fix_correct += 1
+            if len(last_submit.get("justification", "").strip()) >= 10:
+                total_justified += 1
 
         total_steps += steps
         total_reward += cum_reward
         n += 1
 
+        has_j = "J" if last_submit and len(last_submit.get("justification", "").strip()) >= 10 else "-"
         print(f"  {sc.id}: rc={'OK' if last_submit and last_submit.get('root_cause')==sc.root_cause else 'FAIL'} "
               f"fix={'OK' if last_submit and last_submit.get('fix')==sc.correct_fix else 'FAIL'} "
-              f"steps={steps} reward={cum_reward:.1f}")
+              f"just={has_j} steps={steps} reward={cum_reward:.1f}")
 
     print(f"\n{'='*50}")
     print(f"{label} Results ({n} episodes):")
-    print(f"  Root-cause accuracy: {total_rc_correct/n:.1%}")
-    print(f"  Fix accuracy:        {total_fix_correct/n:.1%}")
-    print(f"  Avg steps:           {total_steps/n:.1f}")
-    print(f"  Avg reward:          {total_reward/n:.1f}")
+    print(f"  Root-cause accuracy:  {total_rc_correct/n:.1%}")
+    print(f"  Fix accuracy:         {total_fix_correct/n:.1%}")
+    print(f"  Justification rate:   {total_justified/n:.1%}")
+    print(f"  Avg steps:            {total_steps/n:.1f}")
+    print(f"  Avg reward:           {total_reward/n:.1f}")
     print(f"{'='*50}")
 
     return {
         "rc_accuracy": total_rc_correct / n,
         "fix_accuracy": total_fix_correct / n,
+        "justification_rate": total_justified / n,
         "avg_steps": total_steps / n,
         "avg_reward": total_reward / n,
     }
