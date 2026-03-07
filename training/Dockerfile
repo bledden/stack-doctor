@@ -4,17 +4,18 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Step 1: Upgrade torch + torchvision (Unsloth wants torch>=2.4, torchvision>=0.25)
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir torch torchvision "torchvision>=0.25.0"
+RUN pip install --no-cache-dir --upgrade pip
 
-# Step 2: Install unsloth + unsloth_zoo (let pip resolve all their deps)
+# Step 1: Install unsloth first (it pulls the torch version it wants)
 RUN pip install --no-cache-dir \
     "unsloth @ git+https://github.com/unslothai/unsloth.git" \
     unsloth_zoo \
     xformers
 
-# Step 3: Install TRL + training deps (with deps, since unsloth has version constraints)
+# Step 2: Now install torchvision to match whatever torch unsloth installed
+RUN pip install --no-cache-dir --upgrade torchvision
+
+# Step 3: Install TRL + training deps
 RUN pip install --no-cache-dir \
     "trl>=0.18.2,<=0.24.0" \
     "peft>=0.18.0" \
