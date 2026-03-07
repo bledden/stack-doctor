@@ -4,9 +4,9 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Step 1: Upgrade torch + torchvision to latest (Unsloth wants torch>=2.4)
+# Step 1: Upgrade torch + torchvision (Unsloth wants torch>=2.4, torchvision>=0.25)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu124
+    pip install --no-cache-dir torch torchvision "torchvision>=0.25.0"
 
 # Step 2: Install unsloth + unsloth_zoo (let pip resolve all their deps)
 RUN pip install --no-cache-dir \
