@@ -2,23 +2,34 @@ FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 WORKDIR /app
 
-# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Install Unsloth + fix torch/torchvision compatibility
+# Step 1: Upgrade torch + torchvision to latest (Unsloth wants torch>=2.4)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
-        "unsloth @ git+https://github.com/unslothai/unsloth.git" \
-        xformers && \
-    pip install --no-cache-dir "torchvision>=0.25.0" unsloth_zoo && \
-    pip install --no-cache-dir --no-deps \
-        trl \
-        peft \
-        accelerate \
-        bitsandbytes
+    pip install --no-cache-dir --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
-# Install openenv for environment stepping during reward computation
-RUN pip install --no-cache-dir openenv-core datasets
+# Step 2: Install unsloth + unsloth_zoo (let pip resolve all their deps)
+RUN pip install --no-cache-dir \
+    "unsloth @ git+https://github.com/unslothai/unsloth.git" \
+    unsloth_zoo \
+    xformers
+
+# Step 3: Install TRL + training deps (with deps, since unsloth has version constraints)
+RUN pip install --no-cache-dir \
+    "trl>=0.18.2,<=0.24.0" \
+    "peft>=0.18.0" \
+    "accelerate>=0.34.1" \
+    "bitsandbytes>=0.45.5" \
+    "datasets>=3.4.1" \
+    "transformers>=4.51.3" \
+    "huggingface_hub>=0.34.0" \
+    sentencepiece \
+    hf_transfer \
+    torchao \
+    triton
+
+# Step 4: Install openenv for environment stepping
+RUN pip install --no-cache-dir openenv-core
 
 # Copy project code
 COPY . /app/stack_doctor/
