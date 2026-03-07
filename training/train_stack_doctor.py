@@ -298,8 +298,15 @@ def main():
         train_dataset=dataset,
     )
 
-    print("Starting GRPO training...")
-    trainer.train()
+    # Resume from checkpoint if available
+    import glob
+    checkpoints = sorted(glob.glob("outputs/checkpoint-*"), key=os.path.getmtime)
+    resume_from = checkpoints[-1] if checkpoints else None
+    if resume_from:
+        print(f"Resuming from checkpoint: {resume_from}")
+    else:
+        print("Starting GRPO training from scratch...")
+    trainer.train(resume_from_checkpoint=resume_from)
 
     # Save
     model.save_pretrained("stack_doctor_lora")
