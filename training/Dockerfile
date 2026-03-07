@@ -5,17 +5,20 @@ WORKDIR /app
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Install Unsloth + fix torchvision compatibility
+# Install Unsloth + explicitly fix torch/torchvision compatibility
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
         "unsloth @ git+https://github.com/unslothai/unsloth.git" \
         xformers && \
-    pip install --no-cache-dir --upgrade torchvision && \
+    pip install --no-cache-dir "torchvision>=0.25.0" && \
     pip install --no-cache-dir --no-deps \
         trl \
         peft \
         accelerate \
         bitsandbytes
+
+# Verify unsloth imports before proceeding
+RUN python -c "from unsloth import FastLanguageModel; print('Unsloth OK')"
 
 # Install openenv for environment stepping during reward computation
 RUN pip install --no-cache-dir openenv-core datasets
