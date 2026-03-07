@@ -1,7 +1,7 @@
 ---
-title: Launch Day War Room Environment Server
-emoji: 🎚️
-colorFrom: yellow
+title: Stack Doctor Environment Server
+emoji: 🩺
+colorFrom: red
 colorTo: blue
 sdk: docker
 pinned: false
@@ -11,245 +11,110 @@ tags:
   - openenv
 ---
 
-# Launch Day War Room Environment
+# Stack Doctor
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+An OpenEnv RL environment where an overseer LLM diagnoses sick inference stacks. The agent probes subsystems, reconciles conflicting specialist-agent reports (some of which are wrong), and selects the minimal correct fix — all within a 6-step budget.
+
+Inspired by real SM12x enablement bugs across vLLM, FlashInfer, SGLang, CUTLASS, and Flash-Attention.
+
+**Track**: Statement 3.1 — World Modeling / Professional Tasks
+**Sub-theme**: Fleet AI — Scalable Oversight Agents ($10K)
 
 ## Quick Start
 
-The simplest way to use the Launch Day War Room environment is through the `LaunchDayWarRoomEnv` class:
-
 ```python
-from launch_day_war_room import LaunchDayWarRoomAction, LaunchDayWarRoomEnv
+from stack_doctor import StackDoctorEnv, StackDoctorAction
+import json
 
-try:
-    # Create environment from Docker image
-    launch_day_war_roomenv = LaunchDayWarRoomEnv.from_docker_image("launch_day_war_room-env:latest")
+env = StackDoctorEnv(base_url="https://bledden-stack-doctor.hf.space")
+env.connect()
 
-    # Reset
-    result = launch_day_war_roomenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
+# Start a new incident
+result = env.reset()
+print(result.observation.incident_ticket)
+print(result.observation.specialist_opinions)
 
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
+# Investigate
+result = env.step(StackDoctorAction(message=json.dumps(
+    {"type": "inspect", "target": "logs"}
+)))
+print(result.observation.output)
 
-    for msg in messages:
-        result = launch_day_war_roomenv.step(LaunchDayWarRoomAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
+# Submit diagnosis
+result = env.step(StackDoctorAction(message=json.dumps(
+    {"type": "submit", "root_cause": "arch_guard", "fix": "relax_arch_check"}
+)))
+print(f"Reward: {result.reward}, Done: {result.done}")
 
-finally:
-    # Always clean up
-    launch_day_war_roomenv.close()
+env.close()
 ```
 
-That's it! The `LaunchDayWarRoomEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
+## Environment Design
 
-## Building the Docker Image
+### Root Causes (6) and Fixes (6)
 
-Before using the environment, you need to build the Docker image:
+| Root Cause | Fix | Real-World Motif |
+|-----------|-----|-----------------|
+| `arch_guard` | `relax_arch_check` | FlashInfer SM121 capability checks |
+| `backend_whitelist` | `add_whitelist_entry` | vLLM Marlin SM121+ whitelist gaps |
+| `runtime_loader` | `fix_runtime_path` | SGLang CUDA 13 runtime issues |
+| `backend_selector` | `switch_backend` | CUTLASS dispatch mistakes |
+| `model_config` | `update_model_config` | Model config mismatches on new hardware |
+| `weight_layout` | `fix_weight_mapping` | Weight layout problems across backends |
+
+### Specialists (4)
+
+`runtime`, `dispatch`, `kernel`, `loader` — at least one gives wrong advice per scenario.
+
+### Action Space (JSON)
+
+```json
+{"type":"inspect","target":"logs|config|snippet|metrics"}
+{"type":"ask_specialist","specialist":"runtime|dispatch|kernel|loader"}
+{"type":"apply_fix","fix":"<one of 6 fixes>"}
+{"type":"submit","root_cause":"<one of 6>","fix":"<one of 6>"}
+```
+
+### Reward Function
+
+| Event | Reward |
+|-------|--------|
+| `inspect` or `ask_specialist` | -0.25 |
+| Correct `apply_fix` | +3 |
+| Wrong `apply_fix` | -2 |
+| Correct `submit` (per field) | +8 |
+| Wrong `submit` (per field) | -4 |
+| Solved in ≤4 steps | +2 bonus |
+| Invalid action | -2 |
+
+### Baselines
+
+| Policy | RC Accuracy | Fix Accuracy | Avg Steps | Avg Reward |
+|--------|:-:|:-:|:-:|:-:|
+| Oracle | 100% | 100% | 1.0 | 18.0 |
+| Heuristic | 100% | 100% | 4.0 | 20.5 |
+| Random | 18% | 18% | 3.2 | -4.1 |
+
+## Fleet AI: Specialist Oversight
+
+The core mechanic that targets Fleet AI's $10K sub-theme: the agent must act as a **scalable oversight agent** that reconciles conflicting specialist reports. Specialists have per-scenario reliability — the agent cannot learn "always trust specialist X" and must evaluate evidence on each case.
+
+## Training
+
+Uses Unsloth + TRL GRPO with 3 reward signals:
+1. **Valid JSON** — can the output be parsed as an action plan?
+2. **Environment reward** — cumulative reward from executing the plan
+3. **Efficiency** — bonus for shorter plans that still submit correctly
+
+## Development
 
 ```bash
-# From project root
-docker build -t launch_day_war_room-env:latest -f server/Dockerfile .
-```
+# Local server
+cd stack_doctor && PYTHONPATH=. uvicorn server.app:app --port 8000
 
-## Deploying to Hugging Face Spaces
+# Run baselines
+PYTHONPATH=. python3 -c "from server.baselines import *; ..."
 
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
-```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
-```
-
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
-```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
-```
-
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**LaunchDayWarRoomAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**LaunchDayWarRoomObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Launch Day War Room environment server running, you can connect directly:
-
-```python
-from launch_day_war_room import LaunchDayWarRoomEnv
-
-# Connect to existing server
-launch_day_war_roomenv = LaunchDayWarRoomEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = launch_day_war_roomenv.reset()
-result = launch_day_war_roomenv.step(LaunchDayWarRoomAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `launch_day_war_roomenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from launch_day_war_room import LaunchDayWarRoomAction, LaunchDayWarRoomEnv
-
-# Connect with context manager (auto-connects and closes)
-with LaunchDayWarRoomEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(LaunchDayWarRoomAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
-```
-
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    LaunchDayWarRoomEnvironment,  # Pass class, not instance
-    LaunchDayWarRoomAction,
-    LaunchDayWarRoomObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from launch_day_war_room import LaunchDayWarRoomAction, LaunchDayWarRoomEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with LaunchDayWarRoomEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(LaunchDayWarRoomAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
-
-```bash
-# From the server directory
-python3 server/launch_day_war_room_environment.py
-```
-
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
-
-```bash
-uvicorn server.app:app --reload
-```
-
-## Project Structure
-
-```
-launch_day_war_room/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # LaunchDayWarRoomEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── launch_day_war_room_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
+# Deploy to HF Spaces
+openenv push --repo-id bledden/stack-doctor
 ```
