@@ -17,8 +17,8 @@ An OpenEnv RL environment where an overseer LLM diagnoses sick inference stacks.
 
 Inspired by real SM12x enablement bugs across vLLM, FlashInfer, SGLang, CUTLASS, and Flash-Attention.
 
-**Track**: Statement 3.1 — World Modeling / Professional Tasks
-**Sub-theme**: Fleet AI — Scalable Oversight Agents ($10K)
+**Track**: Statement 1 — Multi-Agent Interactions
+**Sub-theme**: Fleet AI — Scalable Oversight ($10K)
 
 **Live Environment**: https://bledden-stack-doctor.hf.space
 **GitHub**: https://github.com/bledden/stack-doctor
@@ -123,9 +123,22 @@ env.close()
 - Models: DeepSeek-V3, Llama-4-Maverick, Qwen3-235B, Mistral-Large-2, and more
 - Backends: vLLM, SGLang, TensorRT-LLM, FlashInfer, Triton
 
-## Fleet AI: Specialist Oversight
+## Statement 1: Multi-Agent Interactions
 
-The core mechanic targeting Fleet AI's $10K sub-theme: the agent acts as a **scalable oversight agent** that reconciles conflicting specialist reports. This mirrors real incident response where on-call engineers receive contradictory signals from monitoring systems, runbooks, and team members — and must synthesize them under time pressure to choose the correct remediation.
+Stack Doctor is a multi-agent oversight environment. An overseer agent must monitor, analyze, and reconcile reports from 4 specialist agents — at least one of which is wrong per incident. The agent cannot learn "always trust specialist X" because specialist reliability varies by scenario. It must develop theory-of-mind reasoning: evaluating each specialist's claim against physical evidence before acting.
+
+This directly addresses Statement 1's goal of training agents that "model the beliefs and incentives of others in partially observable settings."
+
+## Fleet AI: Scalable Oversight
+
+The Fleet AI sub-theme asks for "environments that train oversight agents to monitor, analyze, and explain the behavior of other AI agents operating in complex, multi-agent settings."
+
+Stack Doctor is exactly this:
+- **Monitor**: The overseer observes specialist agent opinions and system evidence
+- **Analyze**: It cross-verifies specialist claims against logs, configs, metrics, and code
+- **Explain**: The justification field requires the agent to articulate why it trusts some sources over others
+
+Fleet AI's product deploys oversight agents at scale. Stack Doctor provides the training ground where those agents learn to handle unreliable subordinates — a core challenge in any multi-agent fleet.
 
 ## Training
 
