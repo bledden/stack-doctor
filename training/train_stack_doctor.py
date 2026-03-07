@@ -43,17 +43,19 @@ You must output a JSON array of actions to investigate and then submit your diag
   {"type":"inspect","target":"logs|config|snippet|metrics"}
   {"type":"ask_specialist","specialist":"runtime|dispatch|kernel|loader"}
   {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping"}
-  {"type":"submit","root_cause":"arch_guard|backend_whitelist|runtime_loader|backend_selector|model_config|weight_layout","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping"}
+  {"type":"submit","root_cause":"arch_guard|backend_whitelist|runtime_loader|backend_selector|model_config|weight_layout","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping","justification":"short explanation of your reasoning"}
 
 Rules:
 - You have 6 steps max. Each inspect/ask costs -0.25. Wrong fix costs -2. Wrong submit costs -4 per field.
 - Correct submit: +8 per correct field. Efficiency bonus +2 if solved in ≤4 steps.
+- Justification bonus: +1 if you include a justification (≥10 chars) explaining your reasoning.
 - apply_fix can only be used once per episode.
 - submit MUST be your final action.
 - Minimize investigation steps — be decisive.
+- Always include a justification explaining what evidence led to your diagnosis.
 
 Output ONLY a JSON array, e.g.:
-[{"type":"inspect","target":"logs"},{"type":"submit","root_cause":"arch_guard","fix":"relax_arch_check"}]"""
+[{"type":"inspect","target":"logs"},{"type":"submit","root_cause":"arch_guard","fix":"relax_arch_check","justification":"Logs show sm_121 rejected by arch check despite being SM90-compatible"}]"""
 
 
 def format_scenario_prompt(scenario):
@@ -191,6 +193,27 @@ def efficiency_reward(completions, **kwargs):
     return scores
 
 
+def justification_reward(completions, **kwargs):
+    """Reward for including a justification in the submit action."""
+    scores = []
+    for completion in completions:
+        response = completion[0]["content"] if isinstance(completion, list) else completion
+        actions = extract_actions(response)
+        if actions is None:
+            scores.append(0.0)
+            continue
+        submit_actions = [a for a in actions if a.get("type") == "submit"]
+        if not submit_actions:
+            scores.append(0.0)
+            continue
+        justification = submit_actions[-1].get("justification", "")
+        if len(justification.strip()) >= 10:
+            scores.append(1.0)
+        else:
+            scores.append(-0.5)
+    return scores
+
+
 # ---------------------------------------------------------------------------
 # 4. Training (Unsloth + TRL GRPO)
 # ---------------------------------------------------------------------------
@@ -269,6 +292,7 @@ def main():
             valid_json_reward,
             environment_reward,
             efficiency_reward,
+            justification_reward,
         ],
         args=training_args,
         train_dataset=dataset,

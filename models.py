@@ -21,7 +21,7 @@ class StackDoctorAction(Action):
             '  {"type":"inspect","target":"logs|config|snippet|metrics"}\n'
             '  {"type":"ask_specialist","specialist":"runtime|dispatch|kernel|loader"}\n'
             '  {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping"}\n'
-            '  {"type":"submit","root_cause":"...","fix":"..."}'
+            '  {"type":"submit","root_cause":"...","fix":"...","justification":"..."}'
         ),
     )
 

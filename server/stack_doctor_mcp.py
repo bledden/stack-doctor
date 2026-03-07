@@ -110,15 +110,17 @@ class StackDoctorMCPEnvironment(MCPEnvironment):
             return env._do_apply_fix(fix)
 
         @mcp.tool()
-        def submit_diagnosis(root_cause: str, fix: str) -> str:
+        def submit_diagnosis(root_cause: str, fix: str, justification: str = "") -> str:
             """Submit your final diagnosis. This ends the episode.
             Root causes: 'arch_guard', 'backend_whitelist', 'runtime_loader',
             'backend_selector', 'model_config', 'weight_layout'.
             Fixes: 'relax_arch_check', 'add_whitelist_entry', 'fix_runtime_path',
             'switch_backend', 'update_model_config', 'fix_weight_mapping'.
+            justification: A short sentence explaining WHY you chose this root cause
+            and fix based on the evidence you gathered. Bonus +1 if provided.
             Correct root_cause: +8. Wrong: -4. Correct fix: +8. Wrong: -4.
-            Bonus +2 if solved in 4 or fewer steps."""
-            return env._do_submit(root_cause, fix)
+            Bonus +2 if solved in 4 or fewer steps. Bonus +1 for justification."""
+            return env._do_submit(root_cause, fix, justification)
 
         super().__init__(mcp)
 
@@ -217,7 +219,7 @@ class StackDoctorMCPEnvironment(MCPEnvironment):
                 f"[Steps remaining: {remaining} | Reward: -2.0 | Cumulative: {self._cumulative_reward:.2f}]"
             )
 
-    def _do_submit(self, root_cause: str, fix: str) -> str:
+    def _do_submit(self, root_cause: str, fix: str, justification: str = "") -> str:
         err = self._check_episode()
         if err:
             return err
@@ -233,21 +235,31 @@ class StackDoctorMCPEnvironment(MCPEnvironment):
         self._done = True
         rc_correct = root_cause == self._scenario.root_cause
         fix_correct = fix == self._scenario.correct_fix
+        has_justification = len(justification.strip()) >= 10
 
         reward = 0.0
         reward += 8.0 if rc_correct else -4.0
         reward += 8.0 if fix_correct else -4.0
         if rc_correct and fix_correct and self._step_count + 1 <= 4:
             reward += 2.0
+        if has_justification:
+            reward += 1.0
 
         self._record_step(reward, {
             "type": "submit", "root_cause": root_cause, "fix": fix,
+            "justification": justification,
             "rc_correct": rc_correct, "fix_correct": fix_correct,
+            "has_justification": has_justification,
         })
 
         lines = ["[DIAGNOSIS SUBMITTED]"]
         lines.append(f"  Root cause: {root_cause} — {'CORRECT' if rc_correct else 'WRONG (was: ' + self._scenario.root_cause + ')'}")
         lines.append(f"  Fix: {fix} — {'CORRECT' if fix_correct else 'WRONG (was: ' + self._scenario.correct_fix + ')'}")
+        if has_justification:
+            lines.append(f"  Justification: {justification.strip()}")
+            lines.append("  JUSTIFICATION BONUS: +1")
+        else:
+            lines.append("  No justification provided (missed +1 bonus)")
         lines.append(f"  Steps used: {self._step_count}/{MAX_STEPS}")
         if rc_correct and fix_correct and self._step_count <= 4:
             lines.append("  EFFICIENCY BONUS: +2 (solved in <= 4 steps)")
@@ -327,7 +339,7 @@ class StackDoctorMCPEnvironment(MCPEnvironment):
         elif action_type == "apply_fix":
             result = self._do_apply_fix(parsed.get("fix", ""))
         elif action_type == "submit":
-            result = self._do_submit(parsed.get("root_cause", ""), parsed.get("fix", ""))
+            result = self._do_submit(parsed.get("root_cause", ""), parsed.get("fix", ""), parsed.get("justification", ""))
         else:
             self._record_step(-2.0, {"type": "invalid", "message": f"Unknown: {action_type}"})
             result = f"Unknown action type: {action_type}. Penalty: -2.0"
@@ -343,6 +355,8 @@ class StackDoctorMCPEnvironment(MCPEnvironment):
                 last_reward = (8.0 if rc_c else -4.0) + (8.0 if fx_c else -4.0)
                 if rc_c and fx_c and self._step_count <= 4:
                     last_reward += 2.0
+                if last.get("has_justification", False):
+                    last_reward += 1.0
             elif last.get("type") == "apply_fix":
                 last_reward = 3.0 if last.get("correct") else -2.0
             elif last.get("type") == "invalid":

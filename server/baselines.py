@@ -28,6 +28,7 @@ def oracle_policy(scenario: Scenario) -> list[dict]:
             "type": "submit",
             "root_cause": scenario.root_cause,
             "fix": scenario.correct_fix,
+            "justification": f"Root cause is {scenario.root_cause}, applying the correct fix.",
         }
     ]
 

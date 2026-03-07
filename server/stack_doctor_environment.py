@@ -87,7 +87,7 @@ class StackDoctorEnvironment(Environment):
                 '  {"type":"inspect","target":"logs|config|snippet|metrics"}\n'
                 '  {"type":"ask_specialist","specialist":"runtime|dispatch|kernel|loader"}\n'
                 '  {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping"}\n'
-                '  {"type":"submit","root_cause":"...","fix":"..."}\n'
+                '  {"type":"submit","root_cause":"...","fix":"...","justification":"reason for diagnosis"}\n'
             ),
             incident_ticket=scenario.incident_ticket,
             hardware=scenario.hardware,
@@ -184,6 +184,7 @@ class StackDoctorEnvironment(Environment):
     def _handle_submit(self, ep: EpisodeState, parsed: dict) -> StackDoctorObservation:
         root_cause = parsed.get("root_cause")
         fix = parsed.get("fix")
+        justification = parsed.get("justification", "")
 
         if root_cause not in VALID_ROOT_CAUSES:
             return self._handle_invalid(ep, f"Invalid root_cause: {root_cause}. Use one of: {sorted(VALID_ROOT_CAUSES)}")
@@ -195,19 +196,32 @@ class StackDoctorEnvironment(Environment):
         correct_fix = ep.scenario.correct_fix
         rc_correct = root_cause == correct_rc
         fix_correct = fix == correct_fix
+        has_justification = len(justification.strip()) >= 10
 
         reward = 0.0
         reward += 8.0 if rc_correct else -4.0
         reward += 8.0 if fix_correct else -4.0
         if (rc_correct and fix_correct) and ep.step_count <= 4:
             reward += 2.0
+        if has_justification:
+            reward += 1.0
 
         ep.cumulative_reward += reward
-        ep.actions_taken.append({"type": "submit", "root_cause": root_cause, "fix": fix, "rc_correct": rc_correct, "fix_correct": fix_correct})
+        ep.actions_taken.append({
+            "type": "submit", "root_cause": root_cause, "fix": fix,
+            "justification": justification,
+            "rc_correct": rc_correct, "fix_correct": fix_correct,
+            "has_justification": has_justification,
+        })
 
         output_lines = ["[DIAGNOSIS SUBMITTED]"]
         output_lines.append(f"  Root cause: {root_cause} — {'CORRECT' if rc_correct else 'WRONG (was: ' + correct_rc + ')'}")
         output_lines.append(f"  Fix: {fix} — {'CORRECT' if fix_correct else 'WRONG (was: ' + correct_fix + ')'}")
+        if has_justification:
+            output_lines.append(f"  Justification: {justification.strip()}")
+            output_lines.append("  JUSTIFICATION BONUS: +1")
+        else:
+            output_lines.append("  No justification provided (missed +1 bonus)")
         output_lines.append(f"  Steps used: {ep.step_count}/{MAX_STEPS}")
         if rc_correct and fix_correct and ep.step_count <= 4:
             output_lines.append("  EFFICIENCY BONUS: +2 (solved in <= 4 steps)")
