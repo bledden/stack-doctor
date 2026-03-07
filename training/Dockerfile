@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
         "unsloth @ git+https://github.com/unslothai/unsloth.git" \
         xformers && \
-    pip install --no-cache-dir "torchvision>=0.25.0" && \
+    pip install --no-cache-dir "torchvision>=0.25.0" unsloth_zoo && \
     pip install --no-cache-dir --no-deps \
         trl \
         peft \
