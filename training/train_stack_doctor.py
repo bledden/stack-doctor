@@ -339,7 +339,7 @@ def main():
     import torch
 
     # Initialize Weave observability
-    weave.init("stack-doctor/grpo-training")
+    weave.init("grpo-training")
 
     max_seq_length = 8192  # larger budget — Qwen3.5 thinking tokens can be long
     lora_rank = 16  # higher rank for 9B model

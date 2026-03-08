@@ -129,7 +129,7 @@ def main():
     from unsloth import FastLanguageModel
     import argparse
 
-    weave.init("stack-doctor/evaluation")
+    weave.init("stack-doctor-eval")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="unsloth/Qwen3.5-9B", help="Model name or path")
