@@ -36,6 +36,9 @@ def evaluate_model(model, tokenizer, scenarios, label="Model"):
     from unsloth import FastLanguageModel
     FastLanguageModel.for_inference(model)
 
+    # Unwrap VL processor to get text tokenizer for encode/decode
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+
     total_rc_correct = 0
     total_fix_correct = 0
     total_justified = 0
@@ -51,14 +54,14 @@ def evaluate_model(model, tokenizer, scenarios, label="Model"):
         prompt = tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=False,
         )
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        inputs = text_tokenizer(prompt, return_tensors="pt").to(model.device)
         outputs = model.generate(
             **inputs,
             max_new_tokens=512,
             temperature=0.3,
             do_sample=True,
         )
-        response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+        response = text_tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
 
         actions = extract_actions(response)
         if actions is None:

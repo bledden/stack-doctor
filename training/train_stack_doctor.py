@@ -341,19 +341,21 @@ def main():
     # Initialize Weave observability
     weave.init("grpo-training")
 
-    max_seq_length = 8192  # larger budget — Qwen3.5 thinking tokens can be long
-    lora_rank = 16  # higher rank for 9B model
+    max_seq_length = 8192
+    lora_rank = 16
 
-    # Load model — Qwen3.5-9B (released 2026-03-02)
+    # Load model — Qwen3.5-9B (multimodal but we use text-only path)
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name="unsloth/Qwen3.5-9B",
         load_in_4bit=True,
         max_seq_length=max_seq_length,
     )
 
-    # Keep thinking mode enabled — chain-of-thought helps the model reason
-    # about conflicting specialist opinions and complex diagnostics.
-    # extract_actions() strips <think>...</think> before JSON parsing.
+    # Qwen3.5 VLProcessor wraps a text tokenizer — unwrap for encode() calls
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+
+    # Thinking mode — extract_actions() strips <think>...</think>
+    # before JSON parsing so chain-of-thought doesn't break action extraction.
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -383,7 +385,7 @@ def main():
             {"role": "user", "content": format_scenario_prompt(sc)},
         ]
         p = tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
-        prompt_lengths.append(len(tokenizer.encode(p)))
+        prompt_lengths.append(len(text_tokenizer.encode(p)))
     max_prompt_length = max(prompt_lengths) + 10
     max_completion_length = max_seq_length - max_prompt_length
 
