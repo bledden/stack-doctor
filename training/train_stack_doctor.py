@@ -140,7 +140,7 @@ def valid_json_reward(completions, **kwargs):
     return scores
 
 
-def environment_reward(completions, scenario_id=None, **kwargs):
+def environment_reward(completions, **kwargs):
     """Execute action plan against Stack Doctor and return episode reward."""
     scores = []
     scenario_ids = kwargs.get("scenario_id", [None] * len(completions))
@@ -224,7 +224,7 @@ def main():
     from trl import GRPOConfig, GRPOTrainer
     import torch
 
-    max_seq_length = 2048
+    max_seq_length = 4096
     lora_rank = 8
 
     # Load model
@@ -250,13 +250,16 @@ def main():
     train_data = build_dataset(TRAIN_SCENARIOS, n_repeats=80)
     dataset = Dataset.from_list(train_data)
 
-    # Compute prompt length for config
-    sample_prompt = tokenizer.apply_chat_template(
-        train_data[0]["prompt"],
-        add_generation_prompt=True,
-        tokenize=False,
-    )
-    max_prompt_length = len(tokenizer.encode(sample_prompt)) + 10
+    # Compute prompt length from longest scenario
+    prompt_lengths = []
+    for sc in TRAIN_SCENARIOS:
+        msgs = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": format_scenario_prompt(sc)},
+        ]
+        p = tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+        prompt_lengths.append(len(tokenizer.encode(p)))
+    max_prompt_length = max(prompt_lengths) + 10
     max_completion_length = max_seq_length - max_prompt_length
 
     print(f"Prompt length: ~{max_prompt_length} tokens")

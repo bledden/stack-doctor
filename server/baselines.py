@@ -69,6 +69,7 @@ def heuristic_policy(scenario: Scenario) -> list[dict]:
         "type": "submit",
         "root_cause": guess,
         "fix": ROOT_CAUSE_TO_FIX[guess],
+        "justification": f"Keyword analysis of logs and specialist opinions points to {guess}.",
     })
 
     return actions

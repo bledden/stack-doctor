@@ -1,5 +1,5 @@
 """
-Scenario data for the Launch-Day War Room.
+Scenario data for Stack Doctor.
 
 Each scenario encodes a hidden root cause, the correct fix, an incident ticket,
 hardware/model/backend context, log and code snippets, and specialist opinions
