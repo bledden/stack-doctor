@@ -111,7 +111,12 @@ def build_dataset(scenarios, n_repeats=50):
 
 @weave.op()
 def extract_actions(text):
-    """Extract JSON action array from model output."""
+    """Extract JSON action array from model output.
+
+    Returns a list of dicts, or None if parsing fails.
+    Non-dict elements (e.g. strings from malformed output) are filtered out
+    so downstream reward functions never crash on .get() calls.
+    """
     text = text.strip()
     # Strip Qwen3.5 thinking blocks before parsing
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
@@ -122,15 +127,20 @@ def extract_actions(text):
         try:
             actions = json.loads(text[start:end + 1])
             if isinstance(actions, list):
-                return actions
+                # Only keep dict elements — strings/ints from malformed output get dropped
+                actions = [a for a in actions if isinstance(a, dict)]
+                return actions if actions else None
         except json.JSONDecodeError:
             pass
     # Try parsing the whole thing
     try:
         actions = json.loads(text)
         if isinstance(actions, list):
-            return actions
-        return [actions]  # single action
+            actions = [a for a in actions if isinstance(a, dict)]
+            return actions if actions else None
+        if isinstance(actions, dict):
+            return [actions]
+        return None
     except json.JSONDecodeError:
         return None
 
