@@ -482,9 +482,10 @@ def main():
     print(f"Dataset size: {len(dataset)} episodes")
     print(f"Train scenarios: {len(TRAIN_SCENARIOS)}, Eval scenarios: {len(EVAL_SCENARIOS)}")
 
-    # GRPO config — Qwen3.5 VL model breaks with batch_size>1 on text-only
-    # (3D position encoding expects vision tokens). Use batch_size=1 with
-    # high gradient accumulation and more generations to compensate.
+    # GRPO config — Qwen3.5 VL model with text-only patch.
+    # num_generations=2 is the known-stable config for this VL model.
+    # Unsloth overrides batch_size to num_generations, so effective batch
+    # per step = num_generations * gradient_accumulation_steps.
     training_args = GRPOConfig(
         temperature=1.0,
         learning_rate=2e-4,
@@ -494,8 +495,8 @@ def main():
         optim="adamw_8bit",
         logging_steps=1,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=8,
-        num_generations=6,
+        gradient_accumulation_steps=4,
+        num_generations=2,
         max_prompt_length=max_prompt_length,
         max_completion_length=max_completion_length,
         max_steps=300,
