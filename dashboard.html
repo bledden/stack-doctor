@@ -554,7 +554,7 @@ var TRAIN_DATA = {
 var TRAIN_DATA_1B = {
   steps: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],
   reward: [-5.625,-3.375,-8.375,-7.75,-2.75,-2.625,-3.0,-5.125,-8.875,-3.0,-1.75,-3.875,-9.5,-5.5,-3.125,-6.125],
-  completion_length: [251,58.5,281.5,572.5,205.5,103.5,72.5,524,172,72,66,103,148,217,58,144],
+  completion_length: [65.5,57.5,53,36.5,81,98,89,41.5,46,62.5,75,72.5,48,52.5,44,60],
 };
 
 /* ═══════════════════════════════════════════════
@@ -994,12 +994,94 @@ async function runLive(mode) {
     await sleep(6000);
     document.getElementById('diagnosisOverlay').classList.remove('visible');
   } catch (e) {
-    setConnStatus('Error: ' + e.message, 'error');
-    setStatus('Connection Failed', 'error');
-    addLogEntry({ type: 'inspect', label: 'Connection Error', reward: 0,
-      text: 'Could not reach environment server at ' + getServerUrl() + '\n' + e.message + '\n\nMake sure the server is running:\n  uvicorn server.app:app --host 0.0.0.0 --port 8000' });
+    setConnStatus('Offline mode', 'running');
+    await runOffline(mode);
+    await sleep(6000);
+    document.getElementById('diagnosisOverlay').classList.remove('visible');
   }
   enableButtons();
+}
+
+/* ══════════════════════════════════════════════
+   OFFLINE FALLBACK (no server needed)
+   ══════════════════════════════════════════════ */
+async function runOffline(mode) {
+  var sc = DEMO;
+  startTimer();
+  setStatus('Incident Received', 'warning');
+  document.getElementById('scenarioId').textContent = sc.id;
+  document.getElementById('detail-model').textContent = sc.model_name;
+  document.getElementById('detail-backend').textContent = sc.backend;
+  document.getElementById('detail-driver').textContent = sc.hardware;
+  addIncidentCard(sc); populateSpecialists(sc.specialist_opinions);
+  await sleep(1800);
+  if (mode === 'untrained') { await runOfflineUntrained(sc); }
+  else { await runOfflineTrained(sc); }
+}
+
+async function runOfflineUntrained(sc) {
+  state.step = 1; updateSteps(1); setStatus('Model Acting', 'warning');
+  addLogEntry({ type: 'submit', label: 'Blind Submit (no investigation)', reward: 0,
+    text: 'Model skips investigation.\nOutput: [{"type":"submit","root_cause":"runtime_loader","fix":"fix_runtime_path","justification":"maybe"}]' });
+  await sleep(1800);
+  document.getElementById('rootCauseValue').textContent = 'runtime_loader';
+  document.getElementById('rootCauseValue').className = 'vital-value coral';
+  setLayerState('runtime', 'identified');
+  var totalReward = -11.5;
+  addLogEntry({ type: 'reward_breakdown', label: 'Reward Breakdown', reward: totalReward,
+    text: 'Root cause: runtime_loader \u2717 (expected arch_guard) \u2192 -8.0\nFix: fix_runtime_path \u2717 (expected relax_arch_check) \u2192 -2.0\nNo investigation \u2192 -1.0\nJustification too short \u2192 -0.5' });
+  updateReward(totalReward);
+  state.done = true; setStatus('Diagnosis Submitted', 'error');
+  document.getElementById('diagnosisValue').textContent = '\u2717 Incorrect';
+  document.getElementById('diagnosisValue').className = 'vital-value coral';
+  markSpecialist('runtime', false); markSpecialist('dispatch', true);
+  markSpecialist('kernel', true); markSpecialist('loader', false);
+  await sleep(1500); stopTimer();
+  showDiagnosis({ rcCorrect: false, fixCorrect: false, rootCause: 'runtime_loader', fix: 'fix_runtime_path',
+    correctRc: 'arch_guard', correctFix: 'relax_arch_check', totalReward: state.reward });
+}
+
+async function runOfflineTrained(sc) {
+  state.step = 1; updateSteps(1); setStatus('Investigating', 'warning');
+  setLayerState('runtime', 'scanning');
+  addLogEntry({ type: 'inspect', label: 'Inspect Logs', reward: -0.25, text: sc.inspect_logs });
+  updateReward(-0.25); await sleep(2200);
+
+  state.step = 2; updateSteps(2);
+  setLayerState('runtime', ''); setLayerState('backend', 'scanning');
+  addLogEntry({ type: 'inspect', label: 'Inspect Config', reward: -0.25, text: sc.inspect_config });
+  updateReward(-0.25); await sleep(2000);
+
+  state.step = 3; updateSteps(3);
+  setLayerState('backend', 'identified'); highlightSpecialist('dispatch');
+  addLogEntry({ type: 'ask_specialist', label: 'Query: Dispatch', reward: -0.25, text: sc.followup_dispatch });
+  updateReward(-0.25);
+  document.getElementById('rootCauseValue').textContent = 'arch_guard';
+  document.getElementById('rootCauseValue').className = 'vital-value amber';
+  await sleep(2200);
+
+  state.step = 4; updateSteps(4); setStatus('Applying Fix', 'warning');
+  state.fixApplied = true; setLayerState('backend', 'resolved');
+  addLogEntry({ type: 'apply_fix', label: 'Apply Fix: relax_arch_check', reward: 3.0, text: 'Fix applied successfully. Systems recovering.' });
+  updateReward(3.0);
+  document.getElementById('fixStatus').textContent = '\u2713 Applied';
+  document.getElementById('fixStatus').className = 'vital-value emerald';
+  ['backend', 'runtime', 'model', 'memory', 'driver'].forEach(function(l, i) {
+    setTimeout(function() { setLayerState(l, 'resolved'); }, i * 300);
+  }); await sleep(2000);
+
+  state.step = 5; updateSteps(5); state.done = true;
+  setStatus('Diagnosis Submitted', 'success');
+  addLogEntry({ type: 'submit', label: 'Submit Diagnosis', reward: 19.0,
+    text: 'Root cause: arch_guard \u2713\nFix: relax_arch_check \u2713\nJustification: Logs show sm_121 rejected by arch check. Dispatch confirmed SM121 supports HMMA. Config missing sm_12x in supported_archs.' });
+  updateReward(19.0);
+  document.getElementById('diagnosisValue').textContent = '\u2713 Correct';
+  document.getElementById('diagnosisValue').className = 'vital-value emerald';
+  markSpecialist('runtime', false); markSpecialist('dispatch', true);
+  markSpecialist('kernel', true); markSpecialist('loader', false);
+  await sleep(1500); stopTimer();
+  showDiagnosis({ rcCorrect: true, fixCorrect: true, rootCause: 'arch_guard', fix: 'relax_arch_check',
+    correctRc: 'arch_guard', correctFix: 'relax_arch_check', totalReward: state.reward });
 }
 
 /* ── UNTRAINED: blind submit, no investigation ── */
