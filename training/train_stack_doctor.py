@@ -20,6 +20,7 @@ import os
 import sys
 import random
 import re
+import types
 
 import weave
 
@@ -329,7 +330,70 @@ def investigation_quality_reward(completions, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# 4. Training (Unsloth + TRL GRPO)
+# 4. Qwen3.5 VL text-only patch
+# ---------------------------------------------------------------------------
+
+def patch_qwen35_text_only(model):
+    """Monkey-patch Qwen3.5 VL to avoid 3D position encoding crash on text-only batches.
+
+    The VL model's compute_3d_position_ids stores rope_deltas from prior forward
+    passes. When GRPO batches multiple generations (num_generations > 1), the
+    stale rope_deltas have a different batch dimension, causing a shape mismatch:
+        RuntimeError: tensor a (N) must match tensor b (0) at non-singleton dimension 1
+
+    For text-only training we never need vision-aware 3D positions. Returning None
+    makes the model fall back to standard 1D cache_position-based position IDs.
+    """
+    # Find the object that has compute_3d_position_ids — check the model itself
+    # first, then navigate through PEFT/LoRA/Unsloth wrappers.
+    candidates = [model]
+    for attr_chain in [
+        ("base_model",),
+        ("base_model", "model"),
+        ("model",),
+        ("model", "model"),
+    ]:
+        obj = model
+        for attr in attr_chain:
+            if hasattr(obj, attr):
+                obj = getattr(obj, attr)
+            else:
+                break
+        candidates.append(obj)
+
+    target = None
+    for obj in candidates:
+        if hasattr(obj, "compute_3d_position_ids"):
+            target = obj
+            break
+
+    if target is not None:
+        def _text_only_position_ids(self, *args, **kwargs):
+            """Skip 3D position computation — text-only training needs only 1D positions."""
+            self.rope_deltas = None
+            return None
+
+        target.compute_3d_position_ids = types.MethodType(_text_only_position_ids, target)
+        print(f"Patched {type(target).__name__}.compute_3d_position_ids for text-only GRPO")
+    else:
+        # Fallback: patch the forward method to reset rope_deltas each call,
+        # preventing stale deltas from a prior batch causing shape mismatches.
+        target = candidates[0]  # the model itself
+        if hasattr(target, "forward") and hasattr(target, "rope_deltas"):
+            original_forward = target.forward.__func__ if hasattr(target.forward, "__func__") else target.forward
+
+            def _reset_deltas_forward(self, *args, **kwargs):
+                self.rope_deltas = None
+                return original_forward(self, *args, **kwargs)
+
+            target.forward = types.MethodType(_reset_deltas_forward, target)
+            print(f"Patched {type(target).__name__}.forward() to reset rope_deltas")
+        else:
+            print("WARNING: Could not find compute_3d_position_ids or rope_deltas to patch")
+
+
+# ---------------------------------------------------------------------------
+# 5. Training (Unsloth + TRL GRPO)
 # ---------------------------------------------------------------------------
 
 def main():
@@ -356,6 +420,9 @@ def main():
 
     # Thinking mode — extract_actions() strips <think>...</think>
     # before JSON parsing so chain-of-thought doesn't break action extraction.
+
+    # Patch VL model for text-only GRPO (fixes batching crash with num_generations > 2)
+    patch_qwen35_text_only(model)
 
     model = FastLanguageModel.get_peft_model(
         model,
