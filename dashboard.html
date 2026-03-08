@@ -851,6 +851,18 @@ function showDiagnosis(d) {
     val.textContent = r[1] + (r[2] ? ' \u2713' : ' \u2717 \u2192 ' + r[3]);
     row.appendChild(lbl); row.appendChild(val); result.appendChild(row);
   });
+  // Steps used + time
+  var stepsRow = document.createElement('div'); stepsRow.className = 'diagnosis-row';
+  var stepsLbl = document.createElement('div'); stepsLbl.className = 'diagnosis-row-label'; stepsLbl.textContent = 'Steps Used';
+  var stepsVal = document.createElement('div'); stepsVal.className = 'diagnosis-row-value'; stepsVal.textContent = state.step + ' / 6';
+  stepsRow.appendChild(stepsLbl); stepsRow.appendChild(stepsVal); result.appendChild(stepsRow);
+
+  var timeRow = document.createElement('div'); timeRow.className = 'diagnosis-row';
+  var timeLbl = document.createElement('div'); timeLbl.className = 'diagnosis-row-label'; timeLbl.textContent = 'Time';
+  var elapsed = state.startTime ? Math.round((Date.now() - state.startTime) / 1000) : 0;
+  var timeVal = document.createElement('div'); timeVal.className = 'diagnosis-row-value'; timeVal.textContent = elapsed + 's';
+  timeRow.appendChild(timeLbl); timeRow.appendChild(timeVal); result.appendChild(timeRow);
+
   var rEl = document.getElementById('diagnosisReward');
   rEl.textContent = (d.totalReward >= 0 ? '+' : '') + d.totalReward.toFixed(2);
   rEl.style.color = d.totalReward >= 0 ? 'var(--emerald)' : 'var(--coral)';
