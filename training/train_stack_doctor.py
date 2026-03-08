@@ -539,6 +539,20 @@ def main():
     tokenizer.save_pretrained("stack_doctor_lora_1.5b")
     print("Training complete. LoRA saved to stack_doctor_lora_1.5b/")
 
+    # Dump all training metrics to stdout so they persist in Northflank logs
+    import glob
+    for cp_path in sorted(glob.glob("outputs/checkpoint-*/trainer_state.json")):
+        with open(cp_path) as f:
+            ts = json.load(f)
+        print(f"\n=== TRAINER STATE ({cp_path}) ===")
+        for entry in ts.get("log_history", []):
+            print(json.dumps(entry))
+    print("\n=== TRAINING COMPLETE — KEEPING CONTAINER ALIVE ===")
+    print("Connect via exec/ssh to download checkpoints.")
+    import time
+    while True:
+        time.sleep(3600)
+
 
 if __name__ == "__main__":
     main()
