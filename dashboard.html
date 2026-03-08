@@ -1112,6 +1112,7 @@ async function runLiveUntrained(initObs) {
     action: { message: '{"type":"submit","root_cause":"runtime_loader","fix":"fix_runtime_path","justification":"idk"}' }
   });
   var obs = parseObs(stepResp.observation || stepResp);
+  var stepReward = stepResp.reward !== undefined ? stepResp.reward : obs.reward;
   setConnStatus('Connected', 'connected');
 
   // Parse the real environment response
@@ -1131,9 +1132,9 @@ async function runLiveUntrained(initObs) {
   document.getElementById('rootCauseValue').textContent = 'runtime_loader';
   document.getElementById('rootCauseValue').className = 'vital-value coral';
 
-  addLogEntry({ type: 'submit', label: 'Blind Submit', reward: obs.reward,
+  addLogEntry({ type: 'submit', label: 'Blind Submit', reward: stepReward,
     text: outputText });
-  updateReward(obs.reward);
+  updateReward(stepReward);
 
   state.done = true;
   setStatus('Diagnosis Submitted', obs.reward >= 0 ? 'success' : 'error');
@@ -1160,8 +1161,9 @@ async function runLiveTrained(initObs) {
     action: { message: '{"type":"inspect","target":"logs"}' }
   });
   var obs1 = parseObs(step1.observation || step1);
-  addLogEntry({ type: 'inspect', label: 'Inspect Logs', reward: obs1.reward, text: obs1.output });
-  updateReward(obs1.reward);
+  var rew1 = step1.reward !== undefined ? step1.reward : obs1.reward;
+  addLogEntry({ type: 'inspect', label: 'Inspect Logs', reward: rew1, text: obs1.output });
+  updateReward(rew1);
   await sleep(2200);
 
   // Step 2: Inspect config
@@ -1171,8 +1173,9 @@ async function runLiveTrained(initObs) {
     action: { message: '{"type":"inspect","target":"config"}' }
   });
   var obs2 = parseObs(step2.observation || step2);
-  addLogEntry({ type: 'inspect', label: 'Inspect Config', reward: obs2.reward, text: obs2.output });
-  updateReward(obs2.reward);
+  var rew2 = step2.reward !== undefined ? step2.reward : obs2.reward;
+  addLogEntry({ type: 'inspect', label: 'Inspect Config', reward: rew2, text: obs2.output });
+  updateReward(rew2);
   await sleep(2000);
 
   // Step 3: Query a specialist — pick dispatch as a reasonable investigation choice
@@ -1183,8 +1186,9 @@ async function runLiveTrained(initObs) {
     action: { message: '{"type":"ask_specialist","specialist":"dispatch"}' }
   });
   var obs3 = parseObs(step3.observation || step3);
-  addLogEntry({ type: 'ask_specialist', label: 'Query: Dispatch', reward: obs3.reward, text: obs3.output });
-  updateReward(obs3.reward);
+  var rew3 = step3.reward !== undefined ? step3.reward : obs3.reward;
+  addLogEntry({ type: 'ask_specialist', label: 'Query: Dispatch', reward: rew3, text: obs3.output });
+  updateReward(rew3);
   await sleep(2200);
 
   // Step 4: Smart submit — analyze the logs/config to guess the right answer
@@ -1206,9 +1210,10 @@ async function runLiveTrained(initObs) {
     action: { message: JSON.stringify({ type: 'apply_fix', fix: guessFix }) }
   });
   var obs4 = parseObs(step4.observation || step4);
-  var fixWorked = obs4.reward > 0;
-  addLogEntry({ type: 'apply_fix', label: 'Apply Fix: ' + guessFix, reward: obs4.reward, text: obs4.output });
-  updateReward(obs4.reward);
+  var rew4 = step4.reward !== undefined ? step4.reward : obs4.reward;
+  var fixWorked = rew4 > 0;
+  addLogEntry({ type: 'apply_fix', label: 'Apply Fix: ' + guessFix, reward: rew4, text: obs4.output });
+  updateReward(rew4);
   document.getElementById('fixStatus').textContent = fixWorked ? '\u2713 Applied' : '\u2717 Failed';
   document.getElementById('fixStatus').className = 'vital-value ' + (fixWorked ? 'emerald' : 'coral');
 
@@ -1219,14 +1224,16 @@ async function runLiveTrained(initObs) {
   await sleep(2000);
 
   // Step 5: Submit diagnosis
-  if (!obs4.done) {
+  var isDone4 = step4.done !== undefined ? step4.done : obs4.done;
+  if (!isDone4) {
     state.step = 5; updateSteps(5);
     var step5 = await serverPost('/step', {
       action: { message: JSON.stringify({ type: 'submit', root_cause: guessRc, fix: guessFix, justification: justification }) }
     });
     var obs5 = parseObs(step5.observation || step5);
-    addLogEntry({ type: 'submit', label: 'Submit Diagnosis', reward: obs5.reward, text: obs5.output });
-    updateReward(obs5.reward);
+    var rew5 = step5.reward !== undefined ? step5.reward : obs5.reward;
+    addLogEntry({ type: 'submit', label: 'Submit Diagnosis', reward: rew5, text: obs5.output });
+    updateReward(rew5);
 
     var outputText = obs5.output;
     var rcCorrect = outputText.indexOf('Root cause') !== -1 && outputText.split('Root cause')[1].split('\n')[0].indexOf('CORRECT') !== -1;
