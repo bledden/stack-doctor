@@ -1035,6 +1035,350 @@ def _make_scenarios() -> list[Scenario]:
         },
     ))
 
+    scenarios.append(Scenario(
+        id="backend_whitelist_06",
+        root_cause="backend_whitelist",
+        correct_fix="add_whitelist_entry",
+        incident_ticket=(
+            "INCIDENT: H100 SXM nodes cannot run INT8 SmoothQuant models via vLLM. "
+            "Error: 'SmoothQuant kernel not available for current device'. "
+            "Same model runs on A100 with SmoothQuant. H100 FP16/BF16 paths work fine."
+        ),
+        hardware="NVIDIA H100 SXM",
+        model_name="Qwen3-235B-A22B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Loading SmoothQuant INT8 model...\n"
+            "[vLLM] SmoothQuant device check: 'NVIDIA H100 SXM'\n"
+            "[vLLM] SQ_SUPPORTED_DEVICES = ['A100-SXM4-80GB', 'A100-SXM4-40GB', 'A10G']\n"
+            "[vLLM] ERROR: SmoothQuant kernel not available for current device"
+        ),
+        initial_snippet=(
+            "# vllm/model_executor/layers/quantization/smoothquant.py\n"
+            "SQ_SUPPORTED_DEVICES = [\n"
+            "    'A100-SXM4-80GB', 'A100-SXM4-40GB', 'A10G',\n"
+            "]\n"
+            "if torch.cuda.get_device_name() not in SQ_SUPPORTED_DEVICES:\n"
+            "    raise RuntimeError('SmoothQuant kernel not available')\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion("CUDA runtime healthy. H100 recognized with 80GB HBM3.", 0.82, False),
+            "dispatch": SpecialistOpinion(
+                "SmoothQuant whitelist only has Ampere GPUs. H100 device name doesn't match any entry.", 0.94, True
+            ),
+            "kernel": SpecialistOpinion(
+                "H100 INT8 tensor core layout differs from A100. Might need a dedicated kernel.", 0.45, False
+            ),
+            "loader": SpecialistOpinion("INT8 weights loaded correctly into GPU memory.", 0.76, False),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[SmoothQuant] torch.cuda.get_device_name() = 'NVIDIA H100 80GB HBM3'\n"
+                "[SmoothQuant] Not in SQ_SUPPORTED_DEVICES\n"
+                "[SmoothQuant] Supported: ['A100-SXM4-80GB', 'A100-SXM4-40GB', 'A10G']"
+            ),
+            config=(
+                "gpu_name: NVIDIA H100 80GB HBM3\n"
+                "sq_supported: [A100-SXM4-80GB, A100-SXM4-40GB, A10G]\n"
+                "quantization: smoothquant\n"
+                "int8_hw_support: true"
+            ),
+            snippet=(
+                "# H100 has full INT8 tensor core support via IMMA instructions\n"
+                "# SQ_SUPPORTED_DEVICES was written pre-Hopper, only lists Ampere\n"
+                "# Fix: add H100 device names or switch to capability-based check"
+            ),
+            metrics=(
+                "sq_init_failures: 1\n"
+                "fp16_fallback: available\n"
+                "int8_hw_capable: true\n"
+                "expected_speedup_from_int8: 1.8x"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Runtime is fine. H100 fully operational.",
+            "dispatch": "Whitelist is Ampere-only. Adding 'NVIDIA H100 80GB HBM3' (and other H100 SKUs) resolves it.",
+            "kernel": "I was wrong — H100 INT8 IMMA ops are backward-compatible with A100 SmoothQuant kernels. Whitelist issue only.",
+            "loader": "Weights loaded fine. It's the device name check blocking init.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="backend_whitelist_07",
+        root_cause="backend_whitelist",
+        correct_fix="add_whitelist_entry",
+        incident_ticket=(
+            "INCIDENT: B200 cluster fails to launch TensorRT-LLM engine with FP8 quantization. "
+            "Error: 'FP8 post-training quantization not supported on this GPU'. "
+            "B200 has native FP8 support. Same engine builds fine targeting H100."
+        ),
+        hardware="NVIDIA B200",
+        model_name="DeepSeek-V3-671B",
+        backend="TensorRT-LLM 0.18",
+        initial_log=(
+            "[TRT-LLM] Building FP8 engine for B200...\n"
+            "[TRT-LLM] GPU detected: NVIDIA B200 192GB\n"
+            "[TRT-LLM] FP8 PTQ supported GPUs: ['H100', 'H200', 'L40S']\n"
+            "[TRT-LLM] ERROR: FP8 post-training quantization not supported on this GPU"
+        ),
+        initial_snippet=(
+            "# tensorrt_llm/quantization/fp8.py\n"
+            "FP8_PTQ_GPUS = {'H100', 'H200', 'L40S'}\n"
+            "gpu_name = get_gpu_short_name()\n"
+            "if gpu_name not in FP8_PTQ_GPUS:\n"
+            "    raise ValueError('FP8 PTQ not supported on this GPU')\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion("CUDA 13.1 runtime fine. B200 fully visible.", 0.80, False),
+            "dispatch": SpecialistOpinion(
+                "FP8 PTQ whitelist was written for Hopper generation. B200 (Blackwell) not added yet.", 0.92, True
+            ),
+            "kernel": SpecialistOpinion(
+                "B200 FP8 tensor cores use a new micro-architecture. The FP8 GEMM kernels may not be compatible.", 0.42, False
+            ),
+            "loader": SpecialistOpinion(
+                "Engine build fails before weight loading. It's a pre-build validation check.", 0.83, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[TRT-LLM] get_gpu_short_name() = 'B200'\n"
+                "[TRT-LLM] 'B200' not in FP8_PTQ_GPUS {'H100', 'H200', 'L40S'}\n"
+                "[TRT-LLM] FP8 engine build aborted at validation stage"
+            ),
+            config=(
+                "gpu: NVIDIA B200 192GB\n"
+                "fp8_ptq_gpus: [H100, H200, L40S]\n"
+                "target_quant: fp8\n"
+                "engine_build_stage: pre-validation"
+            ),
+            snippet=(
+                "# B200 Blackwell architecture has 5th-gen tensor cores with FP8\n"
+                "# Fully backward-compatible with Hopper FP8 GEMM kernels\n"
+                "# Whitelist only has Hopper-era GPUs\n"
+                "# Fix: add 'B200' and 'B100' to FP8_PTQ_GPUS"
+            ),
+            metrics=(
+                "engine_build_attempts: 1\n"
+                "engine_build_failures: 1\n"
+                "fp8_hw_capable: true\n"
+                "fp16_engine_build: success"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Runtime healthy. B200 fully recognized.",
+            "dispatch": "Add 'B200' to FP8_PTQ_GPUS. Blackwell FP8 tensor cores are Hopper-compatible.",
+            "kernel": "I checked the ISA — B200 FP8 MMA instructions are a superset of H100. Fully compatible. It's just the whitelist.",
+            "loader": "Correct — engine build fails before weights are even touched. Whitelist check is the blocker.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="backend_whitelist_08",
+        root_cause="backend_whitelist",
+        correct_fix="add_whitelist_entry",
+        incident_ticket=(
+            "INCIDENT: DGX Spark (SM121) cannot serve models via SGLang with RadixAttention. "
+            "Error: 'RadixAttention not supported on this compute capability'. "
+            "Standard attention works. RadixAttention is required for prefix caching workloads."
+        ),
+        hardware="NVIDIA SM121 (DGX Spark)",
+        model_name="Llama-4-Maverick-17Bx128E",
+        backend="SGLang 0.5.x",
+        initial_log=(
+            "[SGLang] Initializing RadixAttention backend...\n"
+            "[SGLang] Compute capability: sm_121\n"
+            "[SGLang] RadixAttention supported SM: [80, 86, 89, 90]\n"
+            "[SGLang] ERROR: RadixAttention not supported on this compute capability"
+        ),
+        initial_snippet=(
+            "# sglang/srt/layers/radix_attention.py\n"
+            "RADIX_ATTN_SM = {80, 86, 89, 90}\n"
+            "cc = torch.cuda.get_device_capability()\n"
+            "sm = cc[0] * 10 + cc[1]\n"
+            "if sm not in RADIX_ATTN_SM:\n"
+            "    raise RuntimeError('RadixAttention not supported')\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion("CUDA 13 runtime loaded. SM121 detected correctly.", 0.79, False),
+            "dispatch": SpecialistOpinion(
+                "RadixAttention SM whitelist was authored for Ampere/Ada/Hopper. SM121 not listed.", 0.93, True
+            ),
+            "kernel": SpecialistOpinion(
+                "SM121's shared memory layout is different from SM90. RadixAttention kernels might not tile correctly.", 0.47, False
+            ),
+            "loader": SpecialistOpinion("Model loaded to GPU. Attention backend selection is the blocker.", 0.81, True),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[SGLang] torch.cuda.get_device_capability() = (12, 1)\n"
+                "[SGLang] sm = 121, not in RADIX_ATTN_SM {80, 86, 89, 90}\n"
+                "[SGLang] Falling back to standard attention (no prefix caching)"
+            ),
+            config=(
+                "gpu_sm: 121\n"
+                "radix_attn_sm: [80, 86, 89, 90]\n"
+                "prefix_caching: required\n"
+                "attention_backend: blocked"
+            ),
+            snippet=(
+                "# SM121 supports all warp-level primitives needed by RadixAttention\n"
+                "# Shared memory per SM: 228KB (more than SM90's 228KB)\n"
+                "# Tiling strategy is SM-agnostic; only needs cooperative groups\n"
+                "# Fix: add 120 and 121 to RADIX_ATTN_SM"
+            ),
+            metrics=(
+                "radix_attn_init_failures: 1\n"
+                "prefix_cache_hit_rate: 0% (feature disabled)\n"
+                "standard_attn_fallback: active\n"
+                "ttft_regression_vs_radix: 3.2x"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Runtime fine. No driver or library issues.",
+            "dispatch": "Add SM12x to RADIX_ATTN_SM. The kernel uses standard cooperative groups that SM121 fully supports.",
+            "kernel": "I rechecked — SM121 has 228KB shared mem per SM, identical to SM90. Tiling works. My concern was unfounded.",
+            "loader": "Model loaded correctly. RadixAttention whitelist is the only blocker for prefix caching.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="backend_whitelist_09",
+        root_cause="backend_whitelist",
+        correct_fix="add_whitelist_entry",
+        incident_ticket=(
+            "INCIDENT: A100 nodes fail to enable chunked prefill in vLLM. "
+            "Error: 'Chunked prefill only supported on Hopper+'. "
+            "A100 has sufficient HBM and SM count. Feature needed for long-context workloads."
+        ),
+        hardware="NVIDIA A100 SXM 80GB",
+        model_name="Llama-3.3-70B-Instruct",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Enabling chunked prefill for long-context serving...\n"
+            "[vLLM] GPU: NVIDIA A100-SXM4-80GB (sm_80)\n"
+            "[vLLM] Chunked prefill min SM: 90 (Hopper)\n"
+            "[vLLM] ERROR: Chunked prefill only supported on Hopper+"
+        ),
+        initial_snippet=(
+            "# vllm/core/chunked_prefill.py\n"
+            "MIN_SM_CHUNKED_PREFILL = 90  # Hopper\n"
+            "device_sm = torch.cuda.get_device_capability()\n"
+            "sm = device_sm[0] * 10 + device_sm[1]\n"
+            "if sm < MIN_SM_CHUNKED_PREFILL:\n"
+            "    raise RuntimeError('Chunked prefill only supported on Hopper+')\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion("CUDA 12.4 runtime loaded. A100 fully functional.", 0.81, False),
+            "dispatch": SpecialistOpinion(
+                "Chunked prefill gate uses SM >= 90 but A100 is SM80. The feature doesn't actually need Hopper-specific instructions.", 0.92, True
+            ),
+            "kernel": SpecialistOpinion(
+                "A100 might not have enough L2 cache bandwidth for chunked prefill at scale.", 0.48, False
+            ),
+            "loader": SpecialistOpinion("Model loaded. Scheduler configuration is the issue.", 0.77, False),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[vLLM] sm_80 < MIN_SM_CHUNKED_PREFILL (90)\n"
+                "[vLLM] Chunked prefill disabled\n"
+                "[vLLM] Long sequences processed monolithically -> OOM risk"
+            ),
+            config=(
+                "gpu_sm: 80\n"
+                "min_sm_chunked_prefill: 90\n"
+                "max_context_len: 131072\n"
+                "chunked_prefill: blocked"
+            ),
+            snippet=(
+                "# Chunked prefill splits long prefills into chunks processed incrementally\n"
+                "# Uses standard FlashAttention-2 kernels available on SM80+\n"
+                "# MIN_SM gate was over-restrictive; A100 fully supports the feature\n"
+                "# Fix: lower MIN_SM_CHUNKED_PREFILL to 80 or add A100 to whitelist"
+            ),
+            metrics=(
+                "chunked_prefill_blocked: true\n"
+                "max_prefill_len_without_chunking: 32768\n"
+                "oom_on_long_sequences: true\n"
+                "a100_hbm_available: 80GB"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Runtime fine. A100 fully recognized.",
+            "dispatch": "MIN_SM gate is too restrictive. Chunked prefill uses FlashAttention-2 which works on SM80. Lower the gate or add A100 to an explicit allow-list.",
+            "kernel": "L2 bandwidth on A100 is fine for chunked prefill. The 40MB L2 on A100 handles chunk boundaries well. Not a hardware limitation.",
+            "loader": "Model loaded correctly. It's the scheduler guard blocking chunked prefill.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="backend_whitelist_10",
+        root_cause="backend_whitelist",
+        correct_fix="add_whitelist_entry",
+        incident_ticket=(
+            "INCIDENT: L40S GPUs blocked from running FP8 KV-cache quantization in SGLang. "
+            "Error: 'FP8 KV-cache requires datacenter H-class GPU'. "
+            "L40S is a datacenter Ada Lovelace GPU with FP8 support. BF16 KV-cache works."
+        ),
+        hardware="NVIDIA L40S",
+        model_name="DeepSeek-R1-Distill-70B",
+        backend="SGLang 0.5.x",
+        initial_log=(
+            "[SGLang] Enabling FP8 KV-cache quantization...\n"
+            "[SGLang] GPU: NVIDIA L40S (sm_89)\n"
+            "[SGLang] FP8 KV whitelist: ['H100', 'H200', 'GH200']\n"
+            "[SGLang] ERROR: FP8 KV-cache requires datacenter H-class GPU"
+        ),
+        initial_snippet=(
+            "# sglang/srt/mem_cache/fp8_kv.py\n"
+            "FP8_KV_GPUS = ['H100', 'H200', 'GH200']\n"
+            "gpu_name = torch.cuda.get_device_name()\n"
+            "if not any(g in gpu_name for g in FP8_KV_GPUS):\n"
+            "    raise RuntimeError('FP8 KV-cache requires datacenter H-class GPU')\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion("CUDA 12.4 runtime fine. L40S detected with 48GB GDDR6.", 0.80, False),
+            "dispatch": SpecialistOpinion(
+                "FP8 KV-cache whitelist only includes Hopper GPUs. L40S (Ada SM89) has FP8 tensor cores but isn't listed.", 0.93, True
+            ),
+            "kernel": SpecialistOpinion(
+                "L40S FP8 uses different cache line sizes than H100 HBM3. KV-cache quantization might produce wrong results.", 0.44, False
+            ),
+            "loader": SpecialistOpinion("Model and initial KV-cache allocated. FP8 conversion is blocked at runtime.", 0.79, True),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[SGLang] torch.cuda.get_device_name() = 'NVIDIA L40S'\n"
+                "[SGLang] Substring match against FP8_KV_GPUS: no match\n"
+                "[SGLang] FP8 KV-cache quantization disabled"
+            ),
+            config=(
+                "gpu_name: NVIDIA L40S\n"
+                "fp8_kv_gpus: [H100, H200, GH200]\n"
+                "kv_cache_dtype: bf16 (fallback)\n"
+                "fp8_hw_support: true"
+            ),
+            snippet=(
+                "# L40S (SM89) supports FP8 via Ada Lovelace tensor cores\n"
+                "# FP8 E4M3 format is identical across Ada and Hopper\n"
+                "# KV-cache quantization only needs FP8 <-> BF16 conversion kernels\n"
+                "# Fix: add 'L40S' to FP8_KV_GPUS or use SM-based capability check"
+            ),
+            metrics=(
+                "fp8_kv_blocked: true\n"
+                "kv_cache_memory_bf16: 38.2GB\n"
+                "kv_cache_memory_fp8_projected: 19.1GB\n"
+                "memory_savings_blocked: 50%"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Runtime fine. L40S fully operational.",
+            "dispatch": "Add 'L40S' to FP8_KV_GPUS. Ada SM89 FP8 tensor cores handle E4M3 KV-cache quantization identically to Hopper.",
+            "kernel": "I was wrong — FP8 E4M3 format is the same on Ada and Hopper. Cache line size doesn't affect the quantization math. Whitelist issue only.",
+            "loader": "Model loaded fine. FP8 KV-cache conversion is blocked by the name-based whitelist check.",
+        },
+    ))
+
     # --- runtime_loader additional scenarios ---
     scenarios.append(Scenario(
         id="runtime_loader_03",
@@ -3814,6 +4158,674 @@ def _make_scenarios() -> list[Scenario]:
         },
     ))
 
+    # --- runtime_loader scenarios 07-10 ---
+    scenarios.append(Scenario(
+        id="runtime_loader_07",
+        root_cause="runtime_loader",
+        correct_fix="fix_runtime_path",
+        incident_ticket=(
+            "INCIDENT: TensorRT-LLM engine build fails on H100 with 'libnccl.so.2: cannot open "
+            "shared object file'. NCCL installed via pip but TensorRT-LLM searches system paths only. "
+            "Single-GPU mode works, multi-GPU engine build crashes."
+        ),
+        hardware="NVIDIA H100",
+        model_name="DeepSeek-V3-671B",
+        backend="TensorRT-LLM 0.18",
+        initial_log=(
+            "[TensorRT-LLM] Building engine for TP=8...\n"
+            "[TensorRT-LLM] Loading NCCL for multi-GPU build...\n"
+            "[TensorRT-LLM] ERROR: libnccl.so.2: cannot open shared object file: No such file or directory\n"
+            "[TensorRT-LLM] LD_LIBRARY_PATH=/usr/local/tensorrt/lib:/usr/local/cuda-13/lib64\n"
+            "[TensorRT-LLM] Note: pip-installed NCCL at /usr/local/lib/python3.11/dist-packages/nvidia/nccl/lib/"
+        ),
+        initial_snippet=(
+            "# Environment setup\n"
+            "LD_LIBRARY_PATH=/usr/local/tensorrt/lib:/usr/local/cuda-13/lib64\n"
+            "# NCCL installed via: pip install nvidia-nccl-cu13\n"
+            "# pip puts libnccl.so.2 at:\n"
+            "#   /usr/local/lib/python3.11/dist-packages/nvidia/nccl/lib/\n"
+            "# TensorRT-LLM only searches LD_LIBRARY_PATH and /usr/lib\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "NCCL is installed but its .so lives inside the pip package directory, not "
+                "on LD_LIBRARY_PATH. Add the pip NCCL lib path to LD_LIBRARY_PATH.", 0.95, True
+            ),
+            "dispatch": SpecialistOpinion("Engine build never starts. Can't assess dispatch.", 0.45, False),
+            "kernel": SpecialistOpinion(
+                "Not a kernel issue. The multi-GPU build just can't locate the NCCL shared library.", 0.68, False
+            ),
+            "loader": SpecialistOpinion(
+                "Dynamic linker can't find libnccl.so.2. The pip-installed path is non-standard and "
+                "needs to be added to LD_LIBRARY_PATH or symlinked to a system lib dir.", 0.91, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[System] find / -name 'libnccl.so.2':\n"
+                "  /usr/local/lib/python3.11/dist-packages/nvidia/nccl/lib/libnccl.so.2\n"
+                "[System] ldconfig -p | grep nccl -> (empty)\n"
+                "[System] LD_LIBRARY_PATH=/usr/local/tensorrt/lib:/usr/local/cuda-13/lib64"
+            ),
+            config=(
+                "LD_LIBRARY_PATH=/usr/local/tensorrt/lib:/usr/local/cuda-13/lib64\n"
+                "nccl_install_method: pip\n"
+                "nccl_lib_path=/usr/local/lib/python3.11/dist-packages/nvidia/nccl/lib\n"
+                "ldconfig_nccl: not_cached"
+            ),
+            snippet=(
+                "# libnccl.so.2 exists but in pip package path\n"
+                "# Not in LD_LIBRARY_PATH or ldconfig cache\n"
+                "# Fix: export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:"
+                "/usr/local/lib/python3.11/dist-packages/nvidia/nccl/lib\n"
+                "# Or: ln -s .../nccl/lib/libnccl.so.2 /usr/local/cuda-13/lib64/"
+            ),
+            metrics=(
+                "engine_build_attempts: 4\n"
+                "engine_build_failures: 4\n"
+                "single_gpu_build: success\n"
+                "multi_gpu_build: failed (missing libnccl)"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Add pip NCCL lib path to LD_LIBRARY_PATH. Pip installs NCCL to a non-standard location.",
+            "dispatch": "Engine never built. No dispatch to analyze.",
+            "kernel": "No kernel issue. Just a library path problem.",
+            "loader": "Symlink libnccl.so.2 into /usr/local/cuda-13/lib64/ or extend LD_LIBRARY_PATH.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="runtime_loader_08",
+        root_cause="runtime_loader",
+        correct_fix="fix_runtime_path",
+        incident_ticket=(
+            "INCIDENT: SGLang container on H100 cluster crashes with 'libcublas.so.12: version "
+            "`libcublas.so.12.6` not found'. Host has CUDA 12.6 but container ships CUDA 12.2 "
+            "cublas. Version symbol mismatch on bind-mounted library."
+        ),
+        hardware="NVIDIA H100",
+        model_name="Qwen3-235B-A22B",
+        backend="SGLang 0.5.x",
+        initial_log=(
+            "[SGLang] Starting model worker...\n"
+            "[SGLang] Loading torch with CUDA support...\n"
+            "[SGLang] ERROR: /usr/local/cuda/lib64/libcublas.so.12: version `libcublas.so.12.6` "
+            "not found (required by /opt/sglang/lib/python3.11/site-packages/torch/lib/libtorch_cuda.so)\n"
+            "[Container] libcublas.so.12 -> CUDA 12.2 (container-bundled)\n"
+            "[Host] libcublas.so.12 -> CUDA 12.6"
+        ),
+        initial_snippet=(
+            "# Dockerfile\n"
+            "FROM nvidia/cuda:12.2.0-devel-ubuntu22.04\n"
+            "# Container has CUDA 12.2 cublas\n"
+            "# But PyTorch wheel built against CUDA 12.6 cublas symbols\n"
+            "# nvidia-container-toolkit mounts host cublas over container's\n"
+            "# ... except when NVIDIA_DRIVER_CAPABILITIES doesn't include 'compute'\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "Container's libcublas.so.12 is CUDA 12.2 but PyTorch needs 12.6 symbols. "
+                "The nvidia-container-toolkit should mount the host's 12.6 cublas but "
+                "NVIDIA_DRIVER_CAPABILITIES is set to 'utility' only, skipping compute libs.", 0.94, True
+            ),
+            "dispatch": SpecialistOpinion("Server crashes on import. No dispatch reached.", 0.50, False),
+            "kernel": SpecialistOpinion(
+                "Maybe rebuild PyTorch against CUDA 12.2 to match the container.", 0.40, False
+            ),
+            "loader": SpecialistOpinion(
+                "Symbol version mismatch in libcublas. Container's 12.2 cublas lacks the "
+                "12.6 version tag. Fix NVIDIA_DRIVER_CAPABILITIES to include 'compute' so "
+                "host libs get mounted.", 0.92, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[Container] strings /usr/local/cuda/lib64/libcublas.so.12 | grep 'cublas.so.12' ->\n"
+                "  libcublas.so.12.2\n"
+                "[Container] NVIDIA_DRIVER_CAPABILITIES=utility\n"
+                "[Host] /usr/lib/x86_64-linux-gnu/libcublas.so.12 -> 12.6.4\n"
+                "[nvidia-ctk] compute libs NOT mounted (capabilities missing 'compute')"
+            ),
+            config=(
+                "container_cuda: 12.2\n"
+                "host_cuda: 12.6\n"
+                "NVIDIA_DRIVER_CAPABILITIES=utility\n"
+                "pytorch_cublas_requirement: libcublas.so.12.6\n"
+                "container_cublas_provides: libcublas.so.12.2"
+            ),
+            snippet=(
+                "# NVIDIA_DRIVER_CAPABILITIES=utility only mounts nvidia-smi, not CUDA libs\n"
+                "# Need: NVIDIA_DRIVER_CAPABILITIES=compute,utility\n"
+                "# This tells nvidia-container-toolkit to bind-mount host's CUDA compute libs\n"
+                "# Fix: docker run -e NVIDIA_DRIVER_CAPABILITIES=compute,utility ..."
+            ),
+            metrics=(
+                "container_start_failures: 1\n"
+                "cublas_version_container: 12.2\n"
+                "cublas_version_host: 12.6\n"
+                "cublas_version_required: 12.6"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Set NVIDIA_DRIVER_CAPABILITIES=compute,utility so host CUDA 12.6 libs get mounted into container.",
+            "dispatch": "Can't diagnose — server fails on torch import.",
+            "kernel": "Rebuilding PyTorch is wrong approach. Fix container runtime config to use host libs.",
+            "loader": "Host cublas 12.6 will be mounted over container's 12.2 once NVIDIA_DRIVER_CAPABILITIES includes 'compute'.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="runtime_loader_09",
+        root_cause="runtime_loader",
+        correct_fix="fix_runtime_path",
+        incident_ticket=(
+            "INCIDENT: vLLM on B200 node fails with 'libcudart.so.12: ELF load command address/offset "
+            "not page-aligned'. Container image was built on x86_64 but B200 nodes use aarch64 (GH200). "
+            "Wrong architecture .so files loaded."
+        ),
+        hardware="NVIDIA B200",
+        model_name="Llama-3.3-70B-Instruct",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Initializing CUDA runtime...\n"
+            "[vLLM] ERROR: /usr/local/cuda/lib64/libcudart.so.12: ELF load command "
+            "address/offset not page-aligned\n"
+            "[System] uname -m: aarch64\n"
+            "[System] file libcudart.so.12: ELF 64-bit LSB shared object, x86-64\n"
+            "[vLLM] FATAL: Architecture mismatch — x86_64 .so on aarch64 host"
+        ),
+        initial_snippet=(
+            "# Dockerfile (built on x86_64 CI runner)\n"
+            "FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04\n"
+            "# This pulls x86_64 image on x86_64 CI\n"
+            "# Deployed to aarch64 B200/GH200 nodes\n"
+            "# CUDA libs inside container are x86_64 ELF binaries\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "Container was built for x86_64 but deployed on aarch64. All .so files are wrong "
+                "architecture. Need to rebuild the container image targeting linux/arm64.", 0.96, True
+            ),
+            "dispatch": SpecialistOpinion("Can't assess — CUDA fails to initialize.", 0.42, False),
+            "kernel": SpecialistOpinion(
+                "The 'not page-aligned' error sometimes means corrupt download. Try re-pulling image.", 0.35, False
+            ),
+            "loader": SpecialistOpinion(
+                "ELF architecture mismatch. The dynamic loader is trying to load x86_64 shared "
+                "objects on an aarch64 system. Rebuild with --platform linux/arm64.", 0.93, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[System] uname -m: aarch64\n"
+                "[System] file /usr/local/cuda/lib64/libcudart.so.12:\n"
+                "  ELF 64-bit LSB shared object, x86-64, version 1 (SYSV)\n"
+                "[System] docker inspect image -> Architecture: amd64\n"
+                "[System] host architecture: arm64 (GH200 Grace-Hopper)"
+            ),
+            config=(
+                "host_arch: aarch64\n"
+                "container_arch: x86_64\n"
+                "image_platform: linux/amd64\n"
+                "target_platform: linux/arm64\n"
+                "cuda_libs_arch: x86-64"
+            ),
+            snippet=(
+                "# Container built with: docker build . (on x86_64 CI)\n"
+                "# Deployed to aarch64 GH200 nodes\n"
+                "# Fix: docker build --platform linux/arm64 .\n"
+                "# Or: use multi-arch base image and build on arm64 runner"
+            ),
+            metrics=(
+                "container_start_failures: 1\n"
+                "host_arch: aarch64\n"
+                "image_arch: amd64\n"
+                "elf_load_errors: 1"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Rebuild container targeting linux/arm64 for GH200/B200 aarch64 nodes.",
+            "dispatch": "Nothing runs — wrong architecture binary.",
+            "kernel": "Not a corruption issue. The ELF binary is simply for the wrong CPU architecture.",
+            "loader": "Dynamic loader rejects x86_64 .so on aarch64. Rebuild image for arm64 platform.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="runtime_loader_10",
+        root_cause="runtime_loader",
+        correct_fix="fix_runtime_path",
+        incident_ticket=(
+            "INCIDENT: PyTorch on SM121 DGX Spark fails with 'undefined symbol: cublasLtMatmulAlgoGetIds' "
+            "in libcublas. Multiple CUDA installations present; LD_LIBRARY_PATH ordering causes "
+            "older libcublas to be loaded before the correct one."
+        ),
+        hardware="NVIDIA SM121 (DGX Spark)",
+        model_name="DeepSeek-R1-Distill-70B",
+        backend="SGLang 0.5.x",
+        initial_log=(
+            "[SGLang] Importing torch...\n"
+            "[SGLang] ERROR: undefined symbol: cublasLtMatmulAlgoGetIds\n"
+            "[SGLang] Traceback: libtorch_cuda.so -> libcublas.so.12\n"
+            "[System] Multiple libcublas.so.12 found:\n"
+            "  /usr/local/cuda-12.2/lib64/libcublas.so.12 (v12.2.5)\n"
+            "  /usr/local/cuda-13/lib64/libcublas.so.12 (v12.6.4)\n"
+            "[System] LD_LIBRARY_PATH=/usr/local/cuda-12.2/lib64:/usr/local/cuda-13/lib64"
+        ),
+        initial_snippet=(
+            "# /etc/profile.d/cuda.sh\n"
+            "export LD_LIBRARY_PATH=/usr/local/cuda-12.2/lib64:/usr/local/cuda-13/lib64\n"
+            "# cuda-12.2 listed FIRST — its older libcublas.so.12 gets loaded\n"
+            "# PyTorch needs cublasLtMatmulAlgoGetIds (added in cublas 12.4)\n"
+            "# cuda-12.2's cublas lacks this symbol\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "LD_LIBRARY_PATH has cuda-12.2 before cuda-13. The linker loads the older "
+                "libcublas.so.12 which lacks symbols needed by PyTorch. Swap the path order "
+                "or remove cuda-12.2 from LD_LIBRARY_PATH.", 0.96, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Server crashes on import. Cannot reach dispatch phase.", 0.48, False
+            ),
+            "kernel": SpecialistOpinion(
+                "Maybe the SM121 needs a newer cuBLAS version. Try updating CUDA toolkit.", 0.50, False
+            ),
+            "loader": SpecialistOpinion(
+                "Classic LD_LIBRARY_PATH ordering bug. Two CUDA installs both provide "
+                "libcublas.so.12 but with different symbol versions. The older one (12.2) is "
+                "found first and loaded. Fix: put cuda-13 first or remove cuda-12.2 from path.", 0.94, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[System] ldd /opt/sglang/lib/python3.11/site-packages/torch/lib/libtorch_cuda.so:\n"
+                "  libcublas.so.12 => /usr/local/cuda-12.2/lib64/libcublas.so.12 (WRONG)\n"
+                "[System] nm -D /usr/local/cuda-12.2/lib64/libcublas.so.12 | grep cublasLtMatmulAlgoGetIds -> (empty)\n"
+                "[System] nm -D /usr/local/cuda-13/lib64/libcublas.so.12 | grep cublasLtMatmulAlgoGetIds -> FOUND"
+            ),
+            config=(
+                "LD_LIBRARY_PATH=/usr/local/cuda-12.2/lib64:/usr/local/cuda-13/lib64\n"
+                "cublas_loaded: /usr/local/cuda-12.2/lib64/libcublas.so.12 (v12.2.5)\n"
+                "cublas_needed: libcublas.so.12 >= v12.4 (for cublasLtMatmulAlgoGetIds)\n"
+                "cuda_installations: [12.2, 13]"
+            ),
+            snippet=(
+                "# LD_LIBRARY_PATH lists cuda-12.2 before cuda-13\n"
+                "# Dynamic linker picks first match: cuda-12.2's cublas (v12.2.5)\n"
+                "# PyTorch needs cublasLtMatmulAlgoGetIds (cublas >= 12.4)\n"
+                "# Fix: export LD_LIBRARY_PATH=/usr/local/cuda-13/lib64:$LD_LIBRARY_PATH\n"
+                "# Or remove /usr/local/cuda-12.2/lib64 from path entirely"
+            ),
+            metrics=(
+                "import_failures: 1\n"
+                "cublas_version_loaded: 12.2.5\n"
+                "cublas_version_required: >=12.4\n"
+                "cuda_installations: 2"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Fix LD_LIBRARY_PATH ordering: cuda-13 must come before cuda-12.2. Or purge cuda-12.2.",
+            "dispatch": "Can't diagnose until import succeeds.",
+            "kernel": "CUDA toolkit is new enough. The problem is which libcublas the linker resolves first.",
+            "loader": "Put /usr/local/cuda-13/lib64 first in LD_LIBRARY_PATH so the newer cublas is found.",
+        },
+    ))
+
+    # --- distributed_comm scenarios 07-10 ---
+    scenarios.append(Scenario(
+        id="distributed_comm_07",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: vLLM tensor parallel on 4xH100 fails with 'NCCL error: unhandled "
+            "cuda error, NCCL version 2.21.5'. P2P access between GPU 0 and GPU 2 fails. "
+            "GPUs 0-1 and 2-3 are on separate PCIe switches. nvidia-smi topo shows no P2P."
+        ),
+        hardware="NVIDIA H100",
+        model_name="Llama-4-Maverick-17Bx128E",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Tensor parallel size: 4\n"
+            "[NCCL] Testing P2P access...\n"
+            "[NCCL] GPU 0 <-> GPU 1: P2P OK (NVLink)\n"
+            "[NCCL] GPU 2 <-> GPU 3: P2P OK (NVLink)\n"
+            "[NCCL] GPU 0 <-> GPU 2: P2P FAIL (different PCIe switch, no NVLink)\n"
+            "[NCCL] ERROR: unhandled cuda error on ncclCommInitRank\n"
+            "[NCCL] Falling back to SHM transport... FAILED (NCCL_SHM_DISABLE=1)"
+        ),
+        initial_snippet=(
+            "# Environment\n"
+            "NCCL_P2P_LEVEL=NVL  # Only use NVLink for P2P\n"
+            "NCCL_SHM_DISABLE=1  # Shared memory disabled by admin\n"
+            "NCCL_NET_DISABLE=1  # Network transport disabled\n"
+            "# GPUs 0-1 on NVSwitch A, GPUs 2-3 on NVSwitch B\n"
+            "# No NVLink between switch domains, no fallback transport enabled\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime is fine on each GPU individually. NCCL can't establish communication "
+                "between GPUs on different PCIe switches because all fallback transports are disabled.", 0.88, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Try reducing tensor parallel to 2 and use pipeline parallel for the other dimension.", 0.55, False
+            ),
+            "kernel": SpecialistOpinion(
+                "NCCL needs at least one working transport between all GPU pairs. NVLink only "
+                "connects 0-1 and 2-3. With SHM and NET disabled, there's no path from 0 to 2. "
+                "Fix: enable SHM or NET transport, or set NCCL_P2P_LEVEL=SYS to allow PCIe P2P.", 0.95, True
+            ),
+            "loader": SpecialistOpinion(
+                "Weights shard correctly but NCCL can't communicate across the GPU pairs.", 0.62, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[nvidia-smi topo -m]\n"
+                "        GPU0 GPU1 GPU2 GPU3\n"
+                "GPU0     X   NV12  SYS  SYS\n"
+                "GPU1    NV12  X    SYS  SYS\n"
+                "GPU2    SYS  SYS   X   NV12\n"
+                "GPU3    SYS  SYS  NV12  X\n"
+                "[NCCL] P2P level: NVL (NVLink only)\n"
+                "[NCCL] SHM: disabled\n"
+                "[NCCL] NET: disabled\n"
+                "[NCCL] No transport available for GPU0 <-> GPU2"
+            ),
+            config=(
+                "tensor_parallel_size: 4\n"
+                "NCCL_P2P_LEVEL=NVL\n"
+                "NCCL_SHM_DISABLE=1\n"
+                "NCCL_NET_DISABLE=1\n"
+                "nvlink_pairs: [[0,1],[2,3]]\n"
+                "cross_switch_transport: none"
+            ),
+            snippet=(
+                "# NVLink only connects GPU pairs (0,1) and (2,3)\n"
+                "# NCCL_P2P_LEVEL=NVL restricts to NVLink transport\n"
+                "# SHM and NET are both disabled\n"
+                "# No transport path from GPU 0 to GPU 2\n"
+                "# Fix: NCCL_P2P_LEVEL=SYS (allow PCIe P2P)\n"
+                "# Or: NCCL_SHM_DISABLE=0 (enable shared memory fallback)"
+            ),
+            metrics=(
+                "nccl_init_failures: 1\n"
+                "p2p_nvlink_pairs: 2\n"
+                "p2p_failed_pairs: 4\n"
+                "available_transports: 0 (for cross-switch)"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "All individual GPUs work. NCCL transport config is too restrictive.",
+            "dispatch": "TP=2 with PP=2 would work around it, but better to fix transport config.",
+            "kernel": "Set NCCL_P2P_LEVEL=SYS or enable SHM transport. Cross-switch GPUs need a fallback path.",
+            "loader": "Weight sharding is correct. Communication config blocks cross-switch traffic.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="distributed_comm_08",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: SGLang multi-GPU serving of DeepSeek-V3-671B on 8xB200 hangs during "
+            "rendezvous. Workers 0-6 ready but worker 7 never joins. Timeout after 1800s. "
+            "All 8 GPUs visible via nvidia-smi. Single-GPU serving works."
+        ),
+        hardware="NVIDIA B200",
+        model_name="DeepSeek-V3-671B",
+        backend="SGLang 0.5.x",
+        initial_log=(
+            "[SGLang] Launching 8 workers for TP=8...\n"
+            "[Worker 0-6] Rendezvous: connected to master at 127.0.0.1:29500\n"
+            "[Worker 7] Rendezvous: connecting to master at 127.0.0.1:29500...\n"
+            "[Worker 7] ERROR: Connection refused (127.0.0.1:29500)\n"
+            "[Worker 7] Retrying in 5s... (attempt 1/360)\n"
+            "[Master] WARNING: torchrun nproc=8 but only 7 workers joined\n"
+            "[Master] TIMEOUT: rendezvous deadline exceeded (1800s)"
+        ),
+        initial_snippet=(
+            "# launch.sh\n"
+            "torchrun --nproc_per_node=8 \\\n"
+            "  --master_addr=127.0.0.1 \\\n"
+            "  --master_port=29500 \\\n"
+            "  -m sglang.launch_server \\\n"
+            "  --tp 8 --model DeepSeek-V3-671B\n"
+            "# Worker 7 can't connect — port 29500 hits ulimit on file descriptors\n"
+            "# System ulimit -n = 1024 (default), too low for 8 workers + model\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime healthy on all GPUs. Worker 7 fails at TCP rendezvous, not CUDA init. "
+                "The master process runs out of file descriptors before worker 7 can connect.", 0.90, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Maybe the model is too large for 8-way TP. Try reducing worker count.", 0.38, False
+            ),
+            "kernel": SpecialistOpinion(
+                "Not a GPU kernel issue. This is a process-level rendezvous failure. "
+                "Check system limits — ulimit, max connections, etc.", 0.78, True
+            ),
+            "loader": SpecialistOpinion(
+                "Workers 0-6 load model shards fine. Worker 7 never gets past rendezvous to load anything.", 0.60, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[System] ulimit -n: 1024\n"
+                "[System] lsof -p <master_pid> | wc -l: 1021\n"
+                "[System] Worker 7 connect() -> errno 24 (EMFILE: too many open files)\n"
+                "[System] Workers 0-6 each hold ~120 FDs (CUDA ctx + model + sockets)\n"
+                "[System] Master holds ~150 FDs (7 worker connections + logging + CUDA)"
+            ),
+            config=(
+                "ulimit_nofile: 1024\n"
+                "master_fd_usage: 1021\n"
+                "worker_fd_usage_each: ~120\n"
+                "total_workers: 8\n"
+                "master_port: 29500"
+            ),
+            snippet=(
+                "# Master process FD usage: 7 workers * ~120 FDs + 150 base = ~990\n"
+                "# Worker 7 connect needs FD 1022+ but ulimit is 1024\n"
+                "# Master can't accept() — out of file descriptors\n"
+                "# Fix: ulimit -n 65536 before launching\n"
+                "# Or: add 'LimitNOFILE=65536' to systemd unit"
+            ),
+            metrics=(
+                "workers_joined: 7\n"
+                "workers_expected: 8\n"
+                "rendezvous_timeout_s: 1800\n"
+                "master_fd_count: 1021\n"
+                "ulimit_nofile: 1024"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Raise file descriptor limit: ulimit -n 65536. Master runs out of FDs before worker 7 connects.",
+            "dispatch": "All 8 GPUs are needed for TP=8. The model requires this parallelism level.",
+            "kernel": "System ulimit too low. Raise to 65536 and relaunch.",
+            "loader": "Worker 7 can't even connect. Fix rendezvous FD limit first.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="distributed_comm_09",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: TensorRT-LLM pipeline parallel on 2xSM121 DGX Spark (16 GPUs) has "
+            "NaN outputs after stage boundary. Pipeline stage 0 (GPUs 0-7) produces valid "
+            "activations but stage 1 (GPUs 8-15) receives corrupted tensors. "
+            "Suspected NCCL send/recv data corruption over InfiniBand."
+        ),
+        hardware="NVIDIA SM121 (DGX Spark)",
+        model_name="Mistral-Large-2",
+        backend="TensorRT-LLM 0.18",
+        initial_log=(
+            "[TensorRT-LLM] Pipeline parallel: 2 stages, 8 GPUs each\n"
+            "[TensorRT-LLM] Stage 0 output: tensor([-0.23, 1.45, 0.87, ...]) OK\n"
+            "[TensorRT-LLM] NCCL send rank 7 -> rank 8 (cross-node)\n"
+            "[TensorRT-LLM] Stage 1 input: tensor([nan, nan, inf, nan, ...]) CORRUPTED\n"
+            "[NCCL] Transport: IB/RoCE (mlx5_0)\n"
+            "[NCCL] WARNING: IB error count: 847 (CRC errors on link)"
+        ),
+        initial_snippet=(
+            "# Network config\n"
+            "NCCL_IB_HCA=mlx5_0  # Single HCA\n"
+            "NCCL_IB_GID_INDEX=3  # RoCE v2\n"
+            "NCCL_IB_DISABLE=0\n"
+            "# IB link between nodes has high CRC error rate\n"
+            "# PFC (Priority Flow Control) not enabled on switch\n"
+            "# RoCE without PFC -> packet drops -> NCCL data corruption\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime fine. Data corruption happens during NCCL cross-node transfer. "
+                "The IB link has CRC errors suggesting a physical or config issue.", 0.86, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Pipeline parallel dispatch is correct. Corruption is in the transport layer.", 0.72, False
+            ),
+            "kernel": SpecialistOpinion(
+                "NCCL over RoCE without PFC causes silent data corruption under congestion. "
+                "The switch is dropping packets and RoCE has no reliable retransmission without PFC. "
+                "Enable PFC on the switch or use NCCL_IB_RETRY_CNT and NCCL_IB_TIMEOUT.", 0.94, True
+            ),
+            "loader": SpecialistOpinion(
+                "Model weights load correctly on both stages. Corruption only on activation transfer.", 0.65, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[NCCL] IB transport: RoCE v2 over mlx5_0\n"
+                "[NCCL] Link CRC errors: 847 in 60s\n"
+                "[NCCL] Packet drops: 312\n"
+                "[Switch] PFC: DISABLED on ports 17-18 (inter-node trunk)\n"
+                "[Switch] ECN: DISABLED\n"
+                "[NCCL] NCCL_IB_RETRY_CNT=0 (no retries on failure)"
+            ),
+            config=(
+                "nccl_transport: ib_roce_v2\n"
+                "nccl_ib_hca: mlx5_0\n"
+                "pfc_enabled: false\n"
+                "ecn_enabled: false\n"
+                "nccl_ib_retry_cnt: 0\n"
+                "link_crc_errors: 847"
+            ),
+            snippet=(
+                "# RoCE v2 requires PFC for lossless transport\n"
+                "# Without PFC, congestion causes packet drops\n"
+                "# Dropped packets -> corrupted NCCL data (NaN activations)\n"
+                "# Fix 1: Enable PFC on switch ports 17-18\n"
+                "# Fix 2: Set NCCL_IB_RETRY_CNT=7, NCCL_IB_TIMEOUT=22\n"
+                "# Fix 3: Enable ECN for congestion signaling"
+            ),
+            metrics=(
+                "nan_outputs: 100%_after_stage_boundary\n"
+                "ib_crc_errors: 847\n"
+                "packet_drops: 312\n"
+                "pfc_enabled: false\n"
+                "nccl_retries: 0"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "IB link is unreliable. CRC errors point to congestion-related packet drops without PFC.",
+            "dispatch": "Pipeline routing is fine. The data gets corrupted in transit over the wire.",
+            "kernel": "Enable PFC on the switch and set NCCL_IB_RETRY_CNT=7. RoCE needs lossless fabric.",
+            "loader": "Weight loading fine. Activation transfer across nodes is corrupted by packet drops.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="distributed_comm_10",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: vLLM expert parallel on 8xH100 (DGX H100) sees 70% throughput "
+            "degradation for MoE all-to-all. NCCL chooses single-ring algorithm but "
+            "8-GPU NVSwitch topology supports tree/NVLS. Manual NCCL_ALGO override needed. "
+            "Profiler shows all-to-all using only 12% of available NVLink bandwidth."
+        ),
+        hardware="NVIDIA H100",
+        model_name="DeepSeek-V3-671B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Expert parallel: 8 GPUs, MoE all-to-all\n"
+            "[NCCL] Algorithm: Ring (auto-selected)\n"
+            "[NCCL] NVSwitch detected but NVLS (NVLink SHARP) not enabled\n"
+            "[NCCL] All-to-all per MoE layer: 8.2ms (ring)\n"
+            "[NCCL] Expected with NVLS: 2.4ms\n"
+            "[vLLM] MoE throughput: 380 tok/s (expected: 1200 tok/s)\n"
+            "[NCCL] NVLink bandwidth utilization: 12%"
+        ),
+        initial_snippet=(
+            "# Environment\n"
+            "NCCL_ALGO=Ring  # Explicitly set to Ring (suboptimal for NVSwitch)\n"
+            "NCCL_NVLS_ENABLE=0  # NVLS disabled\n"
+            "# DGX H100 has full NVSwitch — supports Tree and NVLS algorithms\n"
+            "# Ring algorithm doesn't exploit NVSwitch all-to-all hardware\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime and NVSwitch hardware are healthy. NCCL is using a suboptimal "
+                "communication algorithm that doesn't leverage the NVSwitch topology.", 0.85, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Expert dispatch routing is correct. The all-to-all primitive itself is slow.", 0.70, False
+            ),
+            "kernel": SpecialistOpinion(
+                "NCCL Ring algorithm sends data through all 8 GPUs sequentially. On NVSwitch, "
+                "the Tree or NVLS algorithm can do all-to-all in one hop via the switch. "
+                "NCCL_ALGO=Ring is overriding the auto-selector. Remove it and set "
+                "NCCL_NVLS_ENABLE=1 to enable NVLink SHARP.", 0.95, True
+            ),
+            "loader": SpecialistOpinion(
+                "Expert weights sharded correctly. Communication algorithm is the bottleneck.", 0.58, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[NCCL] NCCL_ALGO=Ring (user override)\n"
+                "[NCCL] NCCL_NVLS_ENABLE=0 (disabled)\n"
+                "[NCCL] NVSwitch: present, 8-way full connectivity\n"
+                "[NCCL] Ring all-to-all: 7 hops per message (8 GPUs)\n"
+                "[NCCL] NVLS all-to-all: 1 hop per message (via NVSwitch)\n"
+                "[NCCL] Ring BW utilization: 12% of NVLink capacity\n"
+                "[NCCL] NVLS BW utilization (projected): 85% of NVLink capacity"
+            ),
+            config=(
+                "NCCL_ALGO=Ring\n"
+                "NCCL_NVLS_ENABLE=0\n"
+                "nvswitch_present: true\n"
+                "gpu_count: 8\n"
+                "nvlink_bw_per_gpu_gbs: 900\n"
+                "ring_alltoall_ms: 8.2\n"
+                "nvls_alltoall_ms_projected: 2.4"
+            ),
+            snippet=(
+                "# NCCL_ALGO=Ring forces ring algorithm (7 hops for 8 GPUs)\n"
+                "# NVSwitch allows 1-hop all-to-all via NVLS\n"
+                "# Fix: unset NCCL_ALGO (let NCCL auto-select Tree/NVLS)\n"
+                "# Fix: NCCL_NVLS_ENABLE=1\n"
+                "# Expected speedup: 3.4x on all-to-all latency"
+            ),
+            metrics=(
+                "alltoall_ms_ring: 8.2\n"
+                "alltoall_ms_nvls_projected: 2.4\n"
+                "nvlink_bw_utilization_pct: 12\n"
+                "throughput_tok_s: 380\n"
+                "expected_throughput_nvls: 1200"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "NVSwitch hardware works. NCCL just isn't using it optimally due to forced Ring algorithm.",
+            "dispatch": "Expert routing is fine. The NCCL collective is the bottleneck.",
+            "kernel": "Remove NCCL_ALGO=Ring override and set NCCL_NVLS_ENABLE=1 for NVSwitch-optimized all-to-all.",
+            "loader": "Expert distribution is correct. Fix NCCL algorithm selection.",
+        },
+    ))
+
     return scenarios
 
 
@@ -3912,16 +4924,30 @@ if os.path.exists(_SCRAPED_PATH):
 else:
     _SCRAPED_SCENARIOS = []
 
-# 80/20 train/eval split for scraped scenarios
-_scraped_split = int(len(_SCRAPED_SCENARIOS) * 0.8)
-SCRAPED_TRAIN_SCENARIOS = _SCRAPED_SCENARIOS[:_scraped_split]
-SCRAPED_EVAL_SCENARIOS = _SCRAPED_SCENARIOS[_scraped_split:]
+# Stratified 80/20 train/eval split for scraped scenarios (by root_cause)
+def _stratified_split(scenarios, train_frac=0.8, seed=42):
+    """Split scenarios into train/eval, stratified by root_cause."""
+    from collections import defaultdict
+    rng = random.Random(seed)
+    groups = defaultdict(list)
+    for s in scenarios:
+        groups[s.root_cause].append(s)
+    train, eval_ = [], []
+    for rc in sorted(groups):  # sorted for determinism
+        items = groups[rc]
+        rng.shuffle(items)
+        n_eval = max(1, round(len(items) * (1 - train_frac))) if len(items) >= 2 else 0
+        train.extend(items[n_eval:])
+        eval_.extend(items[:n_eval])
+    return train, eval_
+
+SCRAPED_TRAIN_SCENARIOS, SCRAPED_EVAL_SCENARIOS = _stratified_split(_SCRAPED_SCENARIOS)
 
 # Combine hand-crafted and scraped
 SCENARIOS = _HANDCRAFTED_SCENARIOS + _SCRAPED_SCENARIOS
 
-# _01, _03, _04, _05 = train; _02, _06 = eval  (hand-crafted)
-HANDCRAFTED_TRAIN = [s for s in _HANDCRAFTED_SCENARIOS if s.id.endswith(("_01", "_03", "_04", "_05"))]
+# _01, _03, _04, _05, _07, _08, _09, _10 = train; _02, _06 = eval  (hand-crafted)
+HANDCRAFTED_TRAIN = [s for s in _HANDCRAFTED_SCENARIOS if s.id.endswith(("_01", "_03", "_04", "_05", "_07", "_08", "_09", "_10"))]
 HANDCRAFTED_EVAL = [s for s in _HANDCRAFTED_SCENARIOS if s.id.endswith(("_02", "_06"))]
 
 TRAIN_SCENARIOS = HANDCRAFTED_TRAIN + SCRAPED_TRAIN_SCENARIOS
