@@ -465,11 +465,16 @@ canvas { width: 100% !important; height: 100% !important; }
   <!-- ══════════ DEMO CONTROLS ══════════ -->
   <div class="section-title">Live Environment</div>
   <div class="controls">
-    <input type="text" id="serverUrl" value="http://localhost:8000" class="server-input" placeholder="Server URL">
-    <button class="ctrl-btn primary" id="demoBtn" onclick="runLive('untrained')">&#9654; Untrained Model</button>
-    <button class="ctrl-btn primary" id="demoBtn2" onclick="runLive('trained')" style="background:rgba(0,230,118,0.1);border-color:rgba(0,230,118,0.25);color:var(--emerald);">&#9654; After GRPO</button>
-    <button class="ctrl-btn primary" id="demoBtn3" onclick="runLiveModel()" style="background:rgba(240,160,48,0.1);border-color:rgba(240,160,48,0.25);color:var(--amber);">&#9654; Live Model Inference</button>
+    <input type="text" id="serverUrl" class="server-input" placeholder="Server URL (empty = same origin)">
+    <script>
+    /* Auto-detect: use localhost:8000 for local dev, empty for HF Spaces */
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      document.getElementById('serverUrl').value = 'http://localhost:8000';
+    }
+    </script>
+    <button class="ctrl-btn primary" id="demoBtn" onclick="runComparison()">&#9654; Run Comparison (Base → GRPO Trained)</button>
     <button class="ctrl-btn secondary" id="resetBtn" onclick="resetState()">&#8634; Reset</button>
+    <span id="modelStatus" class="conn-status" style="margin-left:8px;">Model: checking...</span>
     <span id="connStatus" class="conn-status">Disconnected</span>
   </div>
 
@@ -887,10 +892,7 @@ function resetState() {
   document.getElementById('episodeTime').textContent = '00:00';
   document.getElementById('diagnosisOverlay').classList.remove('visible');
   setStatus('Standby', ''); clearAllLayers(); updateSteps(0);
-  document.getElementById('demoBtn').disabled = false;
-  document.getElementById('demoBtn').textContent = '\u25B6 Untrained Model';
-  document.getElementById('demoBtn2').disabled = false;
-  document.getElementById('demoBtn2').textContent = '\u25B6 After GRPO';
+  setConnStatus('Disconnected', '');
 }
 
 /* ═══════════════════════════════════════════════
@@ -952,8 +954,7 @@ function wsSend(type, data) {
     SERVER.ws.onmessage = function(evt) {
       try {
         var msg = JSON.parse(evt.data);
-        if (msg.type === 'error') { reject(new Error(msg.data && msg.data.message || 'Server error')); return; }
-        resolve(msg);
+        resolve(msg);  /* Always resolve — caller handles errors */
       }
       catch (e) { reject(new Error('Bad JSON from server')); }
     };
@@ -969,25 +970,28 @@ function wsClose() {
 async function serverReset(body) {
   if (!SERVER.ws) await wsConnect();
   var msg = await wsSend('reset', body || {});
+  if (msg.type === 'error') throw new Error((msg.data && msg.data.message) || 'Reset failed');
   return msg.data;  /* {observation, reward, done} */
 }
 
 async function serverStep(actionMessage) {
   /* WS step format: {type: "step", data: {message: "..."}} — NOT wrapped in action */
   var msg = await wsSend('step', { message: actionMessage });
+  if (msg.type === 'error') {
+    /* Environment validation error (invalid target, specialist, etc.) — return penalty */
+    var errMsg = (msg.data && msg.data.message) || 'Unknown error';
+    return { observation: { output: 'Error: ' + errMsg }, reward: -2.0, done: false };
+  }
   return msg.data;  /* {observation, reward, done} */
 }
 
 function disableButtons() {
-  var btn = document.getElementById('demoBtn'); var btn2 = document.getElementById('demoBtn2'); var btn3 = document.getElementById('demoBtn3');
-  btn.disabled = true; btn2.disabled = true; btn3.disabled = true;
-  btn.textContent = '\u25CF Running'; btn2.textContent = '\u25CF Running'; btn3.textContent = '\u25CF Running';
+  var btn = document.getElementById('demoBtn');
+  btn.disabled = true; btn.textContent = '\u25CF Running...';
 }
 function enableButtons() {
-  var btn = document.getElementById('demoBtn'); var btn2 = document.getElementById('demoBtn2'); var btn3 = document.getElementById('demoBtn3');
-  btn.disabled = false; btn.textContent = '\u25B6 Untrained Model';
-  btn2.disabled = false; btn2.textContent = '\u25B6 After GRPO';
-  btn3.disabled = false; btn3.textContent = '\u25B6 Live Model Inference';
+  var btn = document.getElementById('demoBtn');
+  btn.disabled = false; btn.textContent = '\u25B6 Run Comparison (Untrained \u2192 Trained)';
 }
 
 /* Map root_cause to a layer name for the architecture diagram */
@@ -1054,6 +1058,7 @@ async function runLive(mode) {
     document.getElementById('diagnosisOverlay').classList.remove('visible');
   } catch (e) {
     console.error('Live connection failed:', e);
+    addLogEntry({ type: 'submit', label: 'CONNECTION ERROR', reward: 0, text: e.message + '\n' + (e.stack || '') });
     wsClose();
     setConnStatus('Offline mode', 'running');
     await runOffline(mode);
@@ -1303,7 +1308,8 @@ async function runLiveTrained(initObs) {
 /* ══════════════════════════════════════════════
    LIVE MODEL INFERENCE — real Qwen 1.5B via MLX
    ══════════════════════════════════════════════ */
-var INFERENCE_URL = 'http://localhost:8001';
+/* Inference URL: same origin on HF Spaces, localhost:8001 locally */
+var INFERENCE_URL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? 'http://localhost:8001' : '';
 
 function extractActionsJS(text) {
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
@@ -1315,79 +1321,140 @@ function extractActionsJS(text) {
   return null;
 }
 
-async function runLiveModel() {
-  disableButtons(); resetState(); setConnStatus('Connecting...', 'running');
+var UNTRAINED_SYSTEM = 'You are Stack Doctor, an expert AI agent that diagnoses inference-stack incidents.\nYou receive an incident ticket with hardware/model/backend context, log excerpts, and specialist opinions.\nSome specialists may be wrong. Output a JSON array of actions:\n  {"type":"inspect","target":"logs|config|snippet|metrics"}\n  {"type":"ask_specialist","specialist":"runtime|dispatch|kernel|loader"}\n  {"type":"apply_fix","fix":"<fix_name>"}\n  {"type":"submit","root_cause":"<cause>","fix":"<fix>","justification":"<why>"}';
+
+var TRAINED_SYSTEM = 'You are Stack Doctor, an expert AI agent that diagnoses inference-stack incidents.\nYou are methodical: first inspect logs and config, then query specialists to cross-verify (some lie), then apply a fix and submit.\n\nAvailable actions (output as a JSON array):\n  {"type":"inspect","target":"logs"} or "config" or "snippet" or "metrics"\n  {"type":"ask_specialist","specialist":"runtime"} or "dispatch" or "kernel" or "loader"\n  {"type":"apply_fix","fix":"<name>"} — available fixes: add_whitelist_entry, fix_comm_config, fix_quantization, fix_runtime_path, fix_weight_mapping, relax_arch_check, switch_backend, tune_memory_config, update_driver_config, update_model_config\n  {"type":"submit","root_cause":"<cause>","fix":"<fix>","justification":"<detailed reasoning>"}\n\nAvailable root causes: arch_guard, backend_selector, backend_whitelist, distributed_comm, driver_compat, memory_oom, model_config, quantization_error, runtime_loader, weight_layout\n\nIMPORTANT: Pick ONE target per inspect, ONE specialist per query. Investigate before submitting. Give a detailed justification.\n\nExample output:\n[{"type":"inspect","target":"logs"},{"type":"inspect","target":"config"},{"type":"ask_specialist","specialist":"kernel"},{"type":"apply_fix","fix":"relax_arch_check"},{"type":"submit","root_cause":"arch_guard","fix":"relax_arch_check","justification":"Logs show architecture check failure for SM90 on the backend. Config confirms the guard is enabled. Kernel specialist confirmed this is not a kernel issue. Relaxing the arch check resolves the incompatibility."}]';
+
+async function runComparison() {
+  disableButtons();
+
+  // 1. Pick a random scenario ID to pin both runs to the same problem
+  var scenarioIds = ['arch_guard_01','arch_guard_02','backend_whitelist_01','backend_whitelist_02','runtime_loader_01','runtime_loader_02','backend_selector_01'];
+  var scenarioId = scenarioIds[Math.floor(Math.random() * scenarioIds.length)];
+
+  // 2. Run untrained
+  await runLiveModel('untrained', scenarioId);
+
+  // 3. Pause between runs
+  await sleep(3000);
+  addLogEntry({ type: 'inspect', label: '--- Now running TRAINED model on same scenario ---', reward: 0, text: 'Same incident: ' + scenarioId });
+  await sleep(2000);
+  resetState();
+
+  // 4. Run trained on same scenario
+  await runLiveModel('trained', scenarioId);
+
+  enableButtons();
+}
+
+async function runLiveModel(mode, scenarioId) {
+  resetState(); setConnStatus('Connecting...', 'running');
+  var isTrained = mode === 'trained';
+  var ws = null;
 
   try {
-    // Reset environment via WebSocket
-    var resetResp = await serverReset({});
-    var obs = parseObs(resetResp.observation || resetResp);
+    // 1. Raw WebSocket connect (derive WS URL from server URL or same-origin)
+    var base = getServerUrl();
+    var wsUrl;
+    if (!base) {
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = proto + '//' + location.host + '/ws';
+    } else {
+      wsUrl = base.replace(/^http/, 'ws') + '/ws';
+    }
+    ws = new WebSocket(wsUrl);
+    await new Promise(function(res, rej) {
+      ws.onopen = res;
+      ws.onerror = function() { rej(new Error('WebSocket connect failed')); };
+      setTimeout(function() { rej(new Error('WebSocket timeout')); }, 5000);
+    });
+
+    function wsSendRaw(type, data) {
+      return new Promise(function(res, rej) {
+        ws.onmessage = function(e) { res(JSON.parse(e.data)); };
+        ws.send(JSON.stringify({type: type, data: data || {}}));
+        setTimeout(function() { rej(new Error('WS ' + type + ' timeout')); }, 15000);
+      });
+    }
+
+    // 2. Reset with pinned scenario ID (same scenario for both runs)
+    var resetData = scenarioId ? { scenario_id: scenarioId } : {};
+    var resetMsg = await wsSendRaw('reset', resetData);
+    if (resetMsg.type === 'error') throw new Error('Reset: ' + JSON.stringify(resetMsg.data));
+    var obs = resetMsg.data.observation;
     setConnStatus('Connected', 'connected');
     startTimer();
     setStatus('Incident Received', 'warning');
 
-    document.getElementById('scenarioId').textContent = (obs.meta && obs.meta.scenario_id) || 'live';
-    document.getElementById('detail-model').textContent = obs.model;
-    document.getElementById('detail-backend').textContent = obs.backend;
-    document.getElementById('detail-driver').textContent = obs.hardware;
+    document.getElementById('scenarioId').textContent = 'live';
+    document.getElementById('detail-model').textContent = obs.model_name || '';
+    document.getElementById('detail-backend').textContent = obs.backend || '';
+    document.getElementById('detail-driver').textContent = obs.hardware || '';
 
-    addIncidentCard({ incident_ticket: obs.ticket, hardware: obs.hardware, model_name: obs.model, backend: obs.backend });
-    populateSpecialists(obs.specialists);
+    addIncidentCard({ incident_ticket: obs.incident_ticket, hardware: obs.hardware, model_name: obs.model_name, backend: obs.backend });
+    populateSpecialists(obs.specialist_opinions || {});
     await sleep(1000);
 
-    // Build prompt from the real observation
+    // 3. Build prompt from raw observation
     var opsStr = '';
-    for (var name in obs.specialists) {
-      var o = obs.specialists[name];
+    var specs = obs.specialist_opinions || {};
+    for (var name in specs) {
+      var o = specs[name];
       opsStr += '  ' + name + ': ' + o.opinion + ' (confidence: ' + o.confidence + ')\n';
     }
-    var userPrompt = 'INCIDENT: ' + obs.ticket + '\nHardware: ' + obs.hardware + ' | Model: ' + obs.model + ' | Backend: ' + obs.backend + '\nLOG:\n' + obs.log + '\nSPECIALISTS:\n' + opsStr + '\nInvestigate and submit your diagnosis as a JSON action array.';
+    var userPrompt = 'INCIDENT: ' + obs.incident_ticket + '\nHardware: ' + obs.hardware + ' | Model: ' + obs.model_name + ' | Backend: ' + obs.backend + '\nLOG:\n' + obs.log_excerpt + '\nSPECIALISTS:\n' + opsStr + '\nInvestigate and submit your diagnosis as a JSON action array.';
 
-    // Call the inference server
-    setStatus('Model Thinking...', 'warning');
-    addLogEntry({ type: 'inspect', label: 'Qwen 1.5B Generating...', reward: 0, text: 'Sending scenario to local MLX model for inference...' });
+    // 4. Call inference server
+    setStatus(isTrained ? 'Trained Model Thinking...' : 'Untrained Model Thinking...', 'warning');
+    addLogEntry({ type: 'inspect', label: 'Qwen 1.5B ' + (isTrained ? '(GRPO)' : '(Base)') + ' Generating...', reward: 0, text: 'Sending scenario to local MLX model for inference...' });
 
     var genResp = await fetch(INFERENCE_URL + '/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: userPrompt, max_tokens: 512 })
+      body: JSON.stringify({ prompt: userPrompt, max_tokens: 512, mode: isTrained ? 'trained' : 'untrained', system: isTrained ? TRAINED_SYSTEM : UNTRAINED_SYSTEM })
     }).then(function(r) { return r.json(); });
 
-    var modelOutput = genResp.text;
-    var genTime = genResp.gen_time;
-
-    // Show what the model actually said
-    addLogEntry({ type: 'inspect', label: 'Model Output (' + genTime.toFixed(1) + 's)', reward: 0, text: modelOutput.slice(0, 500) });
+    addLogEntry({ type: 'inspect', label: 'Model Output (' + genResp.gen_time.toFixed(1) + 's)', reward: 0, text: genResp.text.slice(0, 500) });
     await sleep(500);
 
-    // Parse the model's actions
-    var actions = extractActionsJS(modelOutput);
+    // 5. Parse actions
+    var actions = extractActionsJS(genResp.text);
     if (!actions || actions.length === 0) {
-      addLogEntry({ type: 'submit', label: 'Parse Failed', reward: -5, text: 'Could not parse model output as JSON actions.\nRaw: ' + modelOutput.slice(0, 200) });
+      addLogEntry({ type: 'submit', label: 'Parse Failed', reward: -5, text: 'Could not parse model output as JSON actions.\nRaw: ' + genResp.text.slice(0, 200) });
       updateReward(-5);
       state.done = true; setStatus('Parse Error', 'error'); stopTimer();
-      enableButtons(); wsClose(); return;
+      ws.close(); enableButtons(); return;
     }
 
     setStatus('Executing Actions', 'warning');
 
-    // Execute each action against the live environment
+    // 6. Execute each action via raw WebSocket
     var done = false;
     var lastOutput = '';
+    var totalReward = 0;
     for (var i = 0; i < actions.length && !done; i++) {
       var action = actions[i];
       var aType = action.type || '?';
       state.step = i + 1; updateSteps(i + 1);
 
-      // Visual feedback
+      // Visual feedback on architecture diagram
       if (aType === 'inspect') setLayerState('runtime', 'scanning');
-      if (aType === 'ask_specialist') { highlightSpecialist(action.specialist || 'dispatch'); }
+      if (aType === 'ask_specialist') highlightSpecialist(action.specialist || 'dispatch');
       if (aType === 'apply_fix') setLayerState('backend', 'identified');
       if (aType === 'submit') { setStatus('Diagnosing', 'warning'); document.getElementById('rootCauseValue').textContent = action.root_cause || '?'; }
 
-      var stepResp = await serverStep(JSON.stringify(action));
-      var stepObs = parseObs(stepResp.observation || stepResp);
-      var rew = stepResp.reward !== undefined ? stepResp.reward : stepObs.reward;
-      done = stepResp.done !== undefined ? stepResp.done : stepObs.done;
+      var stepMsg = await wsSendRaw('step', { message: JSON.stringify(action) });
+
+      var rew = 0;
+      var stepOutput = '';
+      if (stepMsg.type === 'error') {
+        rew = -2;
+        stepOutput = 'Error: ' + ((stepMsg.data && stepMsg.data.message) || 'unknown');
+      } else {
+        rew = stepMsg.data.reward || 0;
+        done = stepMsg.data.done || false;
+        stepOutput = (stepMsg.data.observation && stepMsg.data.observation.output) || '';
+      }
+      totalReward += rew;
 
       var label = aType;
       if (aType === 'inspect') label = 'Inspect: ' + (action.target || '?');
@@ -1395,19 +1462,26 @@ async function runLiveModel() {
       if (aType === 'apply_fix') label = 'Fix: ' + (action.fix || '?');
       if (aType === 'submit') label = 'Submit Diagnosis';
 
-      addLogEntry({ type: aType, label: label, reward: rew, text: stepObs.output });
+      addLogEntry({ type: aType, label: label, reward: rew, text: stepOutput });
       updateReward(rew);
-      lastOutput = stepObs.output;
+      lastOutput = stepOutput;
+
+      // Green up layers on successful fix
+      if (aType === 'apply_fix' && rew > 0) {
+        ['backend', 'runtime', 'model', 'memory', 'driver'].forEach(function(l, idx) {
+          setTimeout(function() { setLayerState(l, 'resolved'); }, idx * 300);
+        });
+      }
       await sleep(1200);
     }
 
-    // Show final diagnosis
+    // 7. Final diagnosis
     state.done = true; stopTimer();
-    if (lastOutput.indexOf('DIAGNOSIS SUBMITTED') !== -1 || lastOutput.indexOf('Root cause') !== -1) {
-      var rcCorrect = lastOutput.indexOf('CORRECT') !== -1 && lastOutput.split('Root cause')[1] && lastOutput.split('Root cause')[1].split('\n')[0].indexOf('CORRECT') !== -1;
-      setStatus('Diagnosis Submitted', rcCorrect ? 'success' : 'error');
-      document.getElementById('diagnosisValue').textContent = rcCorrect ? '\u2713 Correct' : '\u2717 Incorrect';
-      document.getElementById('diagnosisValue').className = 'vital-value ' + (rcCorrect ? 'emerald' : 'coral');
+    if (lastOutput.indexOf('DIAGNOSIS SUBMITTED') !== -1 || lastOutput.indexOf('Root cause') !== -1 || done) {
+      var rcCorrect = lastOutput.indexOf('CORRECT') !== -1 && lastOutput.indexOf('Root cause') !== -1 && lastOutput.split('Root cause')[1].split('\n')[0].indexOf('CORRECT') !== -1;
+      setStatus('Diagnosis Submitted', totalReward > 0 ? 'success' : 'error');
+      document.getElementById('diagnosisValue').textContent = totalReward > 0 ? '\u2713 Correct' : '\u2717 Incorrect';
+      document.getElementById('diagnosisValue').className = 'vital-value ' + (totalReward > 0 ? 'emerald' : 'coral');
 
       var submitAction = actions.find(function(a) { return a.type === 'submit'; }) || {};
       var correctRc = submitAction.root_cause || '?';
@@ -1423,19 +1497,22 @@ async function runLiveModel() {
         correctRc: correctRc, correctFix: correctFix,
         totalReward: state.reward
       });
-    } else {
-      setStatus('Episode Ended', 'error');
-    }
 
-    await sleep(6000);
-    document.getElementById('diagnosisOverlay').classList.remove('visible');
+      await sleep(8000);
+      document.getElementById('diagnosisOverlay').classList.remove('visible');
+    } else {
+      setStatus('Episode Ended', totalReward > 0 ? 'success' : 'error');
+    }
 
   } catch (e) {
     console.error('Live model error:', e);
     setConnStatus('Error: ' + e.message, 'error');
     setStatus('Error', 'error');
+    alert('ERROR: ' + e.message);
+    addLogEntry({ type: 'submit', label: 'ERROR', reward: 0, text: e.message + '\n' + (e.stack || '') });
   }
-  wsClose(); enableButtons();
+  if (ws) ws.close();
+  enableButtons();
 }
 
 /* Root cause inference from observation text — pattern matching on known signatures */
@@ -1461,6 +1538,29 @@ function inferRootCause(text) {
   if (t.indexOf('driver') !== -1 && (t.indexOf('compat') !== -1 || t.indexOf('version') !== -1)) return 'driver_compat';
   return 'arch_guard'; // fallback
 }
+
+/* Poll model status on page load */
+(function checkModelStatus() {
+  var statusUrl = INFERENCE_URL || '';
+  var el = document.getElementById('modelStatus');
+  fetch(statusUrl + '/model_status').then(function(r) { return r.json(); }).then(function(d) {
+    if (d.ready) {
+      el.textContent = 'Model: ready';
+      el.className = 'conn-status connected';
+    } else if (d.error) {
+      el.textContent = 'Model: error';
+      el.className = 'conn-status error';
+    } else {
+      el.textContent = 'Model: loading...';
+      el.className = 'conn-status running';
+      setTimeout(checkModelStatus, 3000);
+    }
+  }).catch(function() {
+    /* Local dev without /model_status endpoint — assume ready */
+    el.textContent = 'Model: ready';
+    el.className = 'conn-status connected';
+  });
+})();
 </script>
 </body>
 </html>

@@ -34,15 +34,16 @@ class Handler(BaseHTTPRequestHandler):
 
             user_msg = body.get("prompt", "")
             max_tokens = body.get("max_tokens", 512)
+            system = body.get("system", SYSTEM_PROMPT)
 
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user_msg},
             ]
             # Add conversation history if provided
             history = body.get("history", [])
             if history:
-                messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+                messages = [{"role": "system", "content": system}] + history
 
             prompt = TOKENIZER.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
