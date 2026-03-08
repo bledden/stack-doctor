@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies (torch CPU-only for inference)
 RUN pip install --no-cache-dir \
     openenv-core \
     fastapi \
@@ -18,13 +18,11 @@ RUN python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; \
     AutoTokenizer.from_pretrained('Qwen/Qwen2.5-1.5B-Instruct'); \
     AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-1.5B-Instruct')"
 
-# Copy app code
+# Copy app code (paths relative to HF Space repo root)
 COPY server/ server/
 COPY models.py .
-COPY hf_space/serve.py .
-
-# Copy dashboard
-COPY dashboard.html static/index.html
+COPY serve.py .
+COPY static/ static/
 
 EXPOSE 7860
 
