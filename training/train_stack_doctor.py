@@ -301,12 +301,13 @@ def main():
     # Resume from checkpoint if available
     import glob
     checkpoints = sorted(glob.glob("outputs/checkpoint-*"), key=os.path.getmtime)
-    resume_from = checkpoints[-1] if checkpoints else None
-    if resume_from:
+    if checkpoints:
+        resume_from = checkpoints[-1]
         print(f"Resuming from checkpoint: {resume_from}")
+        trainer.train(resume_from_checkpoint=resume_from)
     else:
         print("Starting GRPO training from scratch...")
-    trainer.train(resume_from_checkpoint=resume_from)
+        trainer.train()
 
     # Save
     model.save_pretrained("stack_doctor_lora")
