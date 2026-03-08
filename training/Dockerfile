@@ -27,7 +27,8 @@ RUN pip install --no-cache-dir \
     sentencepiece \
     hf_transfer \
     torchao \
-    triton
+    triton \
+    weave
 
 # Step 4: Install openenv for environment stepping
 RUN pip install --no-cache-dir openenv-core
@@ -35,5 +36,6 @@ RUN pip install --no-cache-dir openenv-core
 # Copy project code
 COPY . /app/stack_doctor/
 ENV PYTHONPATH="/app/stack_doctor:$PYTHONPATH"
+ENV WANDB_API_KEY="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"
 
 CMD ["python", "/app/stack_doctor/training/train_stack_doctor.py"]
