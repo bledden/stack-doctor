@@ -144,7 +144,7 @@ def valid_json_reward(completions, **kwargs):
         actions = extract_actions(response)
         if actions is None:
             scores.append(-3.0)
-        elif not any(a.get("type") == "submit" for a in actions):
+        elif not any(isinstance(a, dict) and a.get("type") == "submit" for a in actions):
             scores.append(-1.0)  # no submit = useless
         else:
             scores.append(1.0)
@@ -197,9 +197,9 @@ def efficiency_reward(completions, **kwargs):
         actions = extract_actions(response)
         if actions is None:
             scores.append(0.0)
-        elif len(actions) <= 2 and any(a.get("type") == "submit" for a in actions):
+        elif len(actions) <= 2 and any(isinstance(a, dict) and a.get("type") == "submit" for a in actions):
             scores.append(2.0)  # very efficient
-        elif len(actions) <= 4 and any(a.get("type") == "submit" for a in actions):
+        elif len(actions) <= 4 and any(isinstance(a, dict) and a.get("type") == "submit" for a in actions):
             scores.append(1.0)
         else:
             scores.append(0.0)
@@ -220,7 +220,7 @@ def justification_reward(completions, **kwargs):
         if actions is None:
             scores.append(-0.5)
             continue
-        submit_actions = [a for a in actions if a.get("type") == "submit"]
+        submit_actions = [a for a in actions if isinstance(a, dict) and a.get("type") == "submit"]
         if not submit_actions:
             scores.append(-0.5)
             continue
@@ -263,7 +263,7 @@ def partial_credit_reward(completions, **kwargs):
             scores.append(0.0)
             continue
 
-        submit_actions = [a for a in actions if a.get("type") == "submit"]
+        submit_actions = [a for a in actions if isinstance(a, dict) and a.get("type") == "submit"]
         if not submit_actions:
             scores.append(0.0)
             continue
