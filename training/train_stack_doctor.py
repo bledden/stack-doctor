@@ -341,9 +341,12 @@ def patch_qwen35_text_only(model):
     stale rope_deltas have a different batch dimension, causing a shape mismatch:
         RuntimeError: tensor a (N) must match tensor b (0) at non-singleton dimension 1
 
-    For text-only training we never need vision-aware 3D positions. Returning None
-    makes the model fall back to standard 1D cache_position-based position IDs.
+    For text-only training we compute simple 1D positions expanded to 3D (all three
+    RoPE dimensions identical) with zero rope_deltas. This is correct since text has
+    no spatial/temporal vision tokens.
     """
+    import torch
+
     # Find the object that has compute_3d_position_ids — check the model itself
     # first, then navigate through PEFT/LoRA/Unsloth wrappers.
     candidates = [model]
@@ -368,28 +371,44 @@ def patch_qwen35_text_only(model):
             break
 
     if target is not None:
-        def _text_only_position_ids(self, *args, **kwargs):
-            """Skip 3D position computation — text-only training needs only 1D positions."""
-            self.rope_deltas = None
-            return None
+        def _text_only_position_ids(self, input_ids=None, inputs_embeds=None,
+                                     attention_mask=None, past_key_values=None, **kwargs):
+            """Compute 3D position IDs for text-only inputs (no vision tokens).
+
+            Returns position_ids of shape (3, batch_size, seq_len) where all 3
+            RoPE dimensions are identical 1D positions, and sets rope_deltas to
+            zeros so subsequent calls with different batch sizes don't crash.
+            """
+            past_len = 0 if past_key_values is None else past_key_values.get_seq_length()
+
+            if inputs_embeds is not None:
+                batch_size, seq_length = inputs_embeds.shape[:2]
+                device = inputs_embeds.device
+            elif input_ids is not None:
+                batch_size, seq_length = input_ids.shape
+                device = input_ids.device
+            else:
+                self.rope_deltas = None
+                return None
+
+            if attention_mask is not None:
+                # Cumulative sum gives proper positions respecting padding
+                position_ids = attention_mask.long().cumsum(-1) - 1
+                position_ids = position_ids.masked_fill(attention_mask == 0, 0)
+                # Expand to 3 dimensions: (3, batch_size, seq_len)
+                position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+            else:
+                position_ids = torch.arange(past_len, past_len + seq_length, device=device)
+                position_ids = position_ids.view(1, 1, -1).expand(3, batch_size, -1)
+
+            # Zero deltas — text has no vision spatial offsets
+            self.rope_deltas = torch.zeros(batch_size, 1, device=device, dtype=torch.long)
+            return position_ids
 
         target.compute_3d_position_ids = types.MethodType(_text_only_position_ids, target)
         print(f"Patched {type(target).__name__}.compute_3d_position_ids for text-only GRPO")
     else:
-        # Fallback: patch the forward method to reset rope_deltas each call,
-        # preventing stale deltas from a prior batch causing shape mismatches.
-        target = candidates[0]  # the model itself
-        if hasattr(target, "forward") and hasattr(target, "rope_deltas"):
-            original_forward = target.forward.__func__ if hasattr(target.forward, "__func__") else target.forward
-
-            def _reset_deltas_forward(self, *args, **kwargs):
-                self.rope_deltas = None
-                return original_forward(self, *args, **kwargs)
-
-            target.forward = types.MethodType(_reset_deltas_forward, target)
-            print(f"Patched {type(target).__name__}.forward() to reset rope_deltas")
-        else:
-            print("WARNING: Could not find compute_3d_position_ids or rope_deltas to patch")
+        print("WARNING: Could not find compute_3d_position_ids to patch")
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +473,9 @@ def main():
         p = tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
         prompt_lengths.append(len(text_tokenizer.encode(p)))
     max_prompt_length = max(prompt_lengths) + 10
-    max_completion_length = max_seq_length - max_prompt_length
+    # Cap completion length — model outputs JSON arrays (~100-500 tokens).
+    # Large completion budgets waste memory and can cause padding mismatches.
+    max_completion_length = min(1024, max_seq_length - max_prompt_length)
 
     print(f"Prompt length: ~{max_prompt_length} tokens")
     print(f"Completion budget: ~{max_completion_length} tokens")
