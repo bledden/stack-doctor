@@ -20,7 +20,7 @@ class StackDoctorAction(Action):
             'JSON action. One of:\n'
             '  {"type":"inspect","target":"logs|config|snippet|metrics"}\n'
             '  {"type":"ask_specialist","specialist":"runtime|dispatch|kernel|loader"}\n'
-            '  {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping"}\n'
+            '  {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping|tune_memory_config|fix_quantization|fix_comm_config|update_driver_config"}\n'
             '  {"type":"submit","root_cause":"...","fix":"...","justification":"..."}'
         ),
     )

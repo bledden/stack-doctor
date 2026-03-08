@@ -106,14 +106,7 @@ def random_policy(scenario: Scenario) -> list[dict]:
 
 def _keyword_guess(text: str) -> str:
     """Guess root cause from keyword presence in text."""
-    scores = {
-        "arch_guard": 0,
-        "backend_whitelist": 0,
-        "runtime_loader": 0,
-        "backend_selector": 0,
-        "model_config": 0,
-        "weight_layout": 0,
-    }
+    scores = {rc: 0 for rc in ROOT_CAUSES}
 
     # arch_guard keywords
     for kw in ["arch", "architecture", "sm_12", "sm_120", "sm_121", "supported_arch", "capability", "is_supported"]:
@@ -144,6 +137,26 @@ def _keyword_guess(text: str) -> str:
     for kw in ["weight", "mapping", "swap", "gate_proj", "up_proj", "convert", "layout", "qkv"]:
         if kw in text:
             scores["weight_layout"] += 1
+
+    # memory_oom keywords
+    for kw in ["out of memory", "oom", "kv_cache", "memory", "max_model_len", "batch size", "vram"]:
+        if kw in text:
+            scores["memory_oom"] += 1
+
+    # quantization_error keywords
+    for kw in ["quantiz", "fp8", "int4", "nf4", "calibrat", "precision", "scale factor", "gptq"]:
+        if kw in text:
+            scores["quantization_error"] += 1
+
+    # distributed_comm keywords
+    for kw in ["nccl", "tensor parallel", "all_reduce", "rdma", "pipeline parallel", "collective", "rank"]:
+        if kw in text:
+            scores["distributed_comm"] += 1
+
+    # driver_compat keywords
+    for kw in ["driver", "cudnn", "toolkit", "nvcc", "cuda version", "driver version", "libcudnn"]:
+        if kw in text:
+            scores["driver_compat"] += 1
 
     return max(scores, key=scores.get)
 

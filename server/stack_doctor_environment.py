@@ -25,7 +25,9 @@ from .scenarios import (
     FIXES,
     SPECIALISTS,
     Scenario,
+    SpecialistOpinion,
     get_scenario,
+    randomize_specialist_opinions,
 )
 
 MAX_STEPS = 6
@@ -38,8 +40,14 @@ VALID_ROOT_CAUSES = set(ROOT_CAUSES)
 class EpisodeState:
     """Internal mutable episode state (not exposed to agent)."""
 
-    def __init__(self, scenario: Scenario):
+    def __init__(
+        self,
+        scenario: Scenario,
+        specialist_opinions: dict[str, SpecialistOpinion] | None = None,
+    ):
         self.scenario = scenario
+        # Per-episode randomized specialist opinions (falls back to scenario defaults)
+        self.specialist_opinions = specialist_opinions or scenario.specialist_opinions
         self.step_count = 0
         self.fix_applied = False
         self.fix_was_correct: bool | None = None
@@ -69,10 +77,11 @@ class StackDoctorEnvironment(Environment):
             episode_id=episode_id or str(uuid4()),
             step_count=0,
         )
-        self._episode = EpisodeState(scenario)
+        randomized_opinions = randomize_specialist_opinions(scenario)
+        self._episode = EpisodeState(scenario, specialist_opinions=randomized_opinions)
 
         specialist_obs = {}
-        for name, op in scenario.specialist_opinions.items():
+        for name, op in randomized_opinions.items():
             specialist_obs[name] = {
                 "opinion": op.opinion,
                 "confidence": op.confidence,
@@ -86,7 +95,7 @@ class StackDoctorEnvironment(Environment):
                 "Available actions (send as JSON):\n"
                 '  {"type":"inspect","target":"logs|config|snippet|metrics"}\n'
                 '  {"type":"ask_specialist","specialist":"runtime|dispatch|kernel|loader"}\n'
-                '  {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping"}\n'
+                '  {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping|tune_memory_config|fix_quantization|fix_comm_config|update_driver_config"}\n'
                 '  {"type":"submit","root_cause":"...","fix":"...","justification":"reason for diagnosis"}\n'
             ),
             incident_ticket=scenario.incident_ticket,

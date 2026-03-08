@@ -105,7 +105,8 @@ class StackDoctorMCPEnvironment(MCPEnvironment):
             """Apply a fix to the system. Can only be used ONCE per incident.
             Available fixes: 'relax_arch_check', 'add_whitelist_entry',
             'fix_runtime_path', 'switch_backend', 'update_model_config',
-            'fix_weight_mapping'.
+            'fix_weight_mapping', 'tune_memory_config', 'fix_quantization',
+            'fix_comm_config', 'update_driver_config'.
             Correct fix: +3 reward. Wrong fix: -2 reward."""
             return env._do_apply_fix(fix)
 
@@ -113,9 +114,11 @@ class StackDoctorMCPEnvironment(MCPEnvironment):
         def submit_diagnosis(root_cause: str, fix: str, justification: str = "") -> str:
             """Submit your final diagnosis. This ends the episode.
             Root causes: 'arch_guard', 'backend_whitelist', 'runtime_loader',
-            'backend_selector', 'model_config', 'weight_layout'.
+            'backend_selector', 'model_config', 'weight_layout',
+            'memory_oom', 'quantization_error', 'distributed_comm', 'driver_compat'.
             Fixes: 'relax_arch_check', 'add_whitelist_entry', 'fix_runtime_path',
-            'switch_backend', 'update_model_config', 'fix_weight_mapping'.
+            'switch_backend', 'update_model_config', 'fix_weight_mapping',
+            'tune_memory_config', 'fix_quantization', 'fix_comm_config', 'update_driver_config'.
             justification: A short sentence explaining WHY you chose this root cause
             and fix based on the evidence you gathered. Bonus +1 if provided.
             Correct root_cause: +8. Wrong: -4. Correct fix: +8. Wrong: -4.

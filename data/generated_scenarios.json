@@ -1,0 +1,1076 @@
+[
+  {
+    "id": "scraped_backend_selector_000",
+    "root_cause": "backend_selector",
+    "correct_fix": "switch_backend",
+    "incident_ticket": "INCIDENT: [Bug]: V1 Engine fails on Blackwell GB10 (SM 12.1): \"sink setting not supported\" by all compatible attention backends | Hardware: NVIDIA SM121 (DGX Spark) | Backend: vLLM 0.8.x. Model: Nemotron.",
+    "hardware": "NVIDIA SM121 (DGX Spark)",
+    "model_name": "Nemotron",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "# Patch CUTLASS MoE to avoid undefined symbol error\nVLLM_TARGET_DEVICE=cuda MAX_JOBS=4 uv pip install -e .\n# Attempt 4: Auto-select (picks Triton, which fails)\nValueError: Selected backend AttentionBackendEnum.XFORMERS is not valid for this configuration. Reason: ['sink setting not supported']\nFile \"/home/ohsono/vllm/vllm/platforms/cuda.py\", line 370, in get_attn_backend_cls\nraise ValueError(\nValueError: Selected backend AttentionBackendEnum.XFORMERS is not valid for this configuration. Reason: ['sink setting not supported']\ntriton.runtime.errors.PTXASError: PTXAS error: Internal Triton PTX codegen error\n#if defined __CUDA_ARCH__ && __CUDA_ARCH__ == 1200\n#if defined __CUDA_ARCH__ && __CUDA_ARCH__ >= 1200",
+    "initial_snippet": "# csrc/quantization/w8a8/cutlass/c3x/scaled_mm_blockwise_sm120_fp8_dispatch.cuh\n  using KernelType = enable_sm120_only<cutlass::gemm::kernel::GemmUniversal<",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "The wrong attention/compute backend is being selected. The dispatch logic is choosing an incompatible or suboptimal path.",
+        "confidence": 0.88,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The auto-selection logic is picking the wrong kernel path. Manual backend override should fix this.",
+        "confidence": 0.76,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "The auto-selection logic is picking the wrong kernel path. Manual backend override should fix this.",
+        "confidence": 0.89,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The GPU architecture is fully supported.",
+        "confidence": 0.72,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# csrc/cutlass_extensions/common.hpp\n\n# csrc/cutlass_extensions/common.hpp\n// SM12x family includes SM120 (RTX 5090) and SM121 (DGX Spark GB10)\n# csrc/cutlass_extensions/common.hpp\ntemplate <typename Kernel>\n# csrc/cutlass_extensions/common.hpp\nstruct enable_sm120_family : Kernel {\n# csrc/cutlass_extensions/common.hpp\n  template <typename... Args>\n# csrc/cutlass_extensions/common.hpp\n  CUTLASS_DEVICE void operator()(Args&&... args) {\n# csrc/cutlass_extensions/common.hpp\n#if defined __CUDA_ARCH__ && (__CUDA_ARCH__ >= 1200 && __CUDA_ARCH__ < 1300)\n# csrc/cutlass_extensions/common.hpp\n    Kernel::operator()(std::forward<Args>(args)...);\n# csrc/cutlass_extensions/common.hpp\n#endif\n# csrc/cutlass_extensions/common.hpp\n  }",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 33517,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/33517",
+    "source_issues": [
+      28589
+    ]
+  },
+  {
+    "id": "scraped_arch_guard_001",
+    "root_cause": "arch_guard",
+    "correct_fix": "relax_arch_check",
+    "incident_ticket": "INCIDENT: Gate 256-bit instructions to CUDA 12.9+ | Hardware: NVIDIA SM120 (GeForce RTX 5090) | Backend: vLLM 0.8.x. Model: Moe.",
+    "hardware": "NVIDIA SM120 (GeForce RTX 5090)",
+    "model_name": "Moe",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "FAILED: [code=255] CMakeFiles/_C.dir/csrc/activation_kernels.cu.o\n/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DCUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1 -DPy_LIMITED_API=3 -DQUTLASS_DISABLE_PYBIND=1 -DTARGET_CUDA_ARCH=100 -DTORCH_EXTENSION_NAME=_C -DUSE_C10D_GLOO -DUSE_C10D_NCCL -DUSE_DISTRIBUTED -DUSE_NVSHMEM -DUSE_RPC -DUSE_TENSORPIPE -D_C_EXPORTS -I/pytorch/vllm/csrc -I/pytorch/vllm/.deps/cutlass-src/include -I/pytorch/vllm/.deps/cutlass-src/tools/util/include -I/pytorch/vllm/.deps/qutlass-src -I/pytorch/vllm/.deps/qutlass-src/qutlass -I/pytorch/vllm/.deps/qutlass-src/qutlass/csrc/include -I/pytorch/vllm/.deps/qutlass-src/qutlass/csrc/include/cutlass_extensions -isystem /opt/python/cp312-cp312/include/python3.12 -isystem /opt/python/cp312-cp312/lib/python3.12/site-packages/torch/include -isystem /opt/python/cp312-cp312/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -DONNX_NAMESPACE=onnx_c2 -Xcudafe --diag_suppress=cc_clobber_ignored,--diag_suppress=field_without_dll_interface,--diag_suppress=base_class_has_different_dll_interface,--diag_suppress=dll_interface_conflict_none_assumed,--diag_suppress=dll_interface_conflict_dllexport_assumed,--diag_suppress=bad_friend_decl --expt-relaxed-constexpr --expt-extended-lambda -O2 -g -DNDEBUG -std=c++17 -Xcompiler=-fPIC --expt-relaxed-constexpr -DENABLE_FP8 --threads=1 -DENABLE_SCALED_MM_SM90=1 -DENABLE_SCALED_MM_SM120=1 -DENABLE_SCALED_MM_SM100=1 -DENABLE_SCALED_MM_C2X=1 -DENABLE_SPARSE_SCALED_MM_C3X=1 -DENABLE_NVFP4_SM120=1 -DENABLE_CUTLASS_MOE_SM120=1 -DENABLE_NVFP4_SM100=1 -DENABLE_CUTLASS_MOE_SM100=1 -DENABLE_CUTLASS_MLA=1 -DENABLE_CUTLASS_MOE_SM90=1 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_90,code=sm_90 -gencode arch=compute_100,code=sm_100 -gencode arch=compute_120,code=sm_120 -MD -MT CMakeFiles/_C.dir/csrc/activation_kernels.cu.o -MF CMakeFiles/_C.dir/csrc/activation_kernels.cu.o.d -x cu -c /pytorch/vllm/csrc/activation_kernels.cu -o CMakeFiles/_C.dir/csrc/activation_kernels.cu.o\nptxas /tmp/tmpxft_00000520_00000000-7_activation_kernels.compute_100.ptx, line 63; error   : Illegal vector size: 8\nptxas /tmp/tmpxft_00000520_00000000-7_activation_kernels.compute_100.ptx, line 63; error   : Vector type too large, exceeds 128 bit limit\nexport TORCH_CUDA_ARCH_LIST='8.0;8.9;9.0;10.0;12.0'",
+    "initial_snippet": "# csrc/activation_kernels.cu\n#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000\n#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "The dispatch table maps arch to kernel. This architecture has no entry. Adding it to the arch check should fix it.",
+        "confidence": 0.94,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "The dispatch table maps arch to kernel. This architecture has no entry. Adding it to the arch check should fix it.",
+        "confidence": 0.85,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The dispatch table maps arch to kernel. This architecture has no entry. Adding it to the arch check should fix it.",
+        "confidence": 0.81,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "Model weights loaded correctly. Weight layout is standard.",
+        "confidence": 0.78,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# csrc/activation_kernels.cu\n#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000 && \\\n# csrc/activation_kernels.cu\n    defined(CUDA_VERSION) && CUDA_VERSION >= 12090\n# csrc/activation_kernels.cu\n#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000 && \\\n# csrc/activation_kernels.cu\n    defined(CUDA_VERSION) && CUDA_VERSION >= 12090",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 34791,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/34791",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_quantization_error_002",
+    "root_cause": "quantization_error",
+    "correct_fix": "fix_quantization",
+    "incident_ticket": "INCIDENT: Docs: fix wrong cc in int8.md | Hardware: NVIDIA B200 | Backend: vLLM 0.8.x. Model: Opt.",
+    "hardware": "NVIDIA B200",
+    "model_name": "Opt",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Error details not extracted from issue",
+    "initial_snippet": "# docs/features/quantization/int8.md\n    **Blackwell GPU Limitation**: INT8 is not supported on compute capability >= 100 (e.g., RTX 6000 Blackwell).",
+    "specialist_opinions": {
+      "loader": {
+        "opinion": "Quantized weights are being loaded with the wrong scale factors or format assumptions.",
+        "confidence": 0.82,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The quantization format is incompatible with this backend or hardware. Precision handling is broken.",
+        "confidence": 0.87,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The model config is valid for quantized inference.",
+        "confidence": 0.82,
+        "is_correct": false
+      },
+      "dispatch": {
+        "opinion": "GPU architecture supports the needed quantization instructions.",
+        "confidence": 0.59,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# docs/features/quantization/int8.md\n    **Blackwell GPU Limitation**: INT8 is not supported on compute capability >= 10.0 (e.g., RTX 6000 Blackwell).",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 36209,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/36209",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_arch_guard_003",
+    "root_cause": "arch_guard",
+    "correct_fix": "relax_arch_check",
+    "incident_ticket": "INCIDENT: [Bug] NVFP4 MoE kernels fail on RTX Blackwell (SM12.0) - device capability family check missing SM120 | Hardware: NVIDIA SM120 (GeForce RTX 5090) | Backend: vLLM 0.8.x. Model: Moe.",
+    "hardware": "NVIDIA SM120 (GeForce RTX 5090)",
+    "model_name": "Moe",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "ValueError: NvFp4 MoE backend 'FLASHINFER_CUTLASS' does not support the\ndeployment configuration since kernel does not support current device.\nRuntimeError: FlashInfer-CUTLASS MoE kernel does not support current device sm_120",
+    "initial_snippet": "# vllm/model_executor/layers/fused_moe/cutlass_moe.py\n        return current_platform.has_device_capability((10, 0))\n# vllm/model_executor/layers/fused_moe/flashinfer_cutedsl_moe.py\n        return current_platform.is_device_capability_family(100)\n# vllm/model_executor/layers/fused_moe/flashinfer_cutlass_moe.py\n            current_platform.is_cuda()\n                current_platform.is_device_capability((9, 0))\n                or current_platform.is_device_capability_family(100)\n        # The following are supported by FlashInferExperts:\n        #   * unquantized\n        #   * fp8 static per-tensor on 9.0+\n        #   * fp8 block on 9.0\n        #   * nvfp4 on 10.0+\n\n                (scheme == (kFp8Static128BlockSym, kFp8Dynamic128Sym))",
+    "specialist_opinions": {
+      "loader": {
+        "opinion": "This is a capability check issue. The GPU supports the needed instructions but fails the hardcoded arch whitelist.",
+        "confidence": 0.89,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "This is a capability check issue. The GPU supports the needed instructions but fails the hardcoded arch whitelist.",
+        "confidence": 0.84,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The architecture check is blocking kernel dispatch. The GPU architecture is not in the supported set despite being compatible at the instruction level.",
+        "confidence": 0.85,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Possible kernel incompatibility \u2014 this GPU may lack required instructions.",
+        "confidence": 0.57,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/model_executor/layers/fused_moe/cutlass_moe.py\n        p = current_platform\n# vllm/model_executor/layers/fused_moe/cutlass_moe.py\n        return p.is_cuda() and (\n# vllm/model_executor/layers/fused_moe/cutlass_moe.py\n            p.is_device_capability_family(100)\n# vllm/model_executor/layers/fused_moe/cutlass_moe.py\n            or p.is_device_capability_family(110)\n# vllm/model_executor/layers/fused_moe/cutlass_moe.py\n            or p.is_device_capability_family(120)\n# vllm/model_executor/layers/fused_moe/cutlass_moe.py\n        )\n# vllm/model_executor/layers/fused_moe/flashinfer_cutedsl_moe.py\n        p = current_platform\n# vllm/model_executor/layers/fused_moe/flashinfer_cutedsl_moe.py\n        return p.is_cuda() and p.is_device_capability_family(100)\n# vllm/model_executor/layers/fused_moe/flashinfer_cutlass_moe.py\n        p = current_platform\n# vllm/model_executor/layers/fused_moe/flashinfer_cutlass_moe.py\n            p.is_cuda()",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 33417,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/33417",
+    "source_issues": [
+      33416
+    ]
+  },
+  {
+    "id": "scraped_memory_oom_004",
+    "root_cause": "memory_oom",
+    "correct_fix": "tune_memory_config",
+    "incident_ticket": "INCIDENT: [Feat] Add CUDA torch fallbacks for fp8_mqa_logits/fp8_paged_mqa_logits_torch function | Hardware: NVIDIA H100 | Backend: vLLM 0.8.x. Model: Deepseek.",
+    "hardware": "NVIDIA H100",
+    "model_name": "Deepseek",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "# pip uninstall deep_gemm\n# vllm serve /mnt/data4/models/deepseek-ai/DeepSeek-V3___2 -tp=8  --tokenizer-mode deepseek_v32 --enable-auto-tool-choice --tool-call-parser deepseek_v32 --reasoning-parser deepseek_v3 --enforce-eager\n...\n...\n(APIServer pid=1017794) INFO 02-25 16:22:09 [launcher.py:47] Route: /v1/messages, Methods: POST\n(APIServer pid=1017794) INFO 02-25 16:22:09 [launcher.py:47] Route: /inference/v1/generate, Methods: POST\n(APIServer pid=1017794) INFO 02-25 16:22:09 [launcher.py:47] Ro",
+    "initial_snippet": "# vllm/model_executor/layers/sparse_attn_indexer.py\nfrom vllm.utils.deep_gemm import fp8_mqa_logits, fp8_paged_mqa_logits\nfrom vllm.utils.import_utils import has_deep_gemm\n\n            logits = fp8_mqa_logits(\n                q_fp8[chunk.token_start : chunk.token_end],\n                (k_fp8, k_scale.view(torch.float32).flatten()),\n                weights[chunk.token_start : chunk.token_end],\n                chunk.cu_seqlen_ks,\n                chunk.cu_seqlen_ke,\n                clean_logits=False,\n            )\n\n        logits = fp8_paged_mqa_logits(\n            padded_q_fp8_decode_tokens,",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "The memory allocator is running out of space. Chunked prefill or paged attention config should help.",
+        "confidence": 0.8,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The memory allocator is running out of space. Chunked prefill or paged attention config should help.",
+        "confidence": 0.92,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "The memory allocator is running out of space. Chunked prefill or paged attention config should help.",
+        "confidence": 0.76,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "Weight layout matches expected format. No conversion issues.",
+        "confidence": 0.66,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/model_executor/layers/sparse_attn_indexer.py\nfrom vllm.utils.deep_gemm import (\n# vllm/model_executor/layers/sparse_attn_indexer.py\n    fp8_mqa_logits,\n# vllm/model_executor/layers/sparse_attn_indexer.py\n    fp8_mqa_logits_torch,\n# vllm/model_executor/layers/sparse_attn_indexer.py\n    fp8_paged_mqa_logits,\n# vllm/model_executor/layers/sparse_attn_indexer.py\n    fp8_paged_mqa_logits_torch,\n# vllm/model_executor/layers/sparse_attn_indexer.py\n    is_deep_gemm_supported,\n# vllm/model_executor/layers/sparse_attn_indexer.py\n)\n# vllm/model_executor/layers/sparse_attn_indexer.py\n            if is_deep_gemm_supported():\n# vllm/model_executor/layers/sparse_attn_indexer.py\n                logits = fp8_mqa_logits(\n# vllm/model_executor/layers/sparse_attn_indexer.py\n                    q_fp8[chunk.token_start : chunk.token_end],",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 35271,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/35271",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_model_config_005",
+    "root_cause": "model_config",
+    "correct_fix": "update_model_config",
+    "incident_ticket": "INCIDENT: [Quant] Support MXFP4 W4A16 for compressed-tensors MoE models | Hardware: NVIDIA H100 | Backend: vLLM 0.8.x. Model: Deepseek.",
+    "hardware": "NVIDIA H100",
+    "model_name": "Deepseek",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Invalid responses: 0.000",
+    "initial_snippet": "# Code snippet not extracted from diff",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "Shape mismatch during model loading \u2014 the config specifies different dimensions than the checkpoint contains.",
+        "confidence": 0.81,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The model configuration doesn't match the checkpoint. There's a mismatch in model parameters.",
+        "confidence": 0.84,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Shape mismatch during model loading \u2014 the config specifies different dimensions than the checkpoint contains.",
+        "confidence": 0.83,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "Backend selection is appropriate for this model.",
+        "confidence": 0.74,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# tests/evals/gsm8k/configs/Qwen3-30B-A3B-MXFP4A16.yaml\nmodel_name: nm-testing/Qwen3-30B-A3B-MXFP4A16\n# tests/evals/gsm8k/configs/Qwen3-30B-A3B-MXFP4A16.yaml\naccuracy_threshold: 0.88\n# tests/evals/gsm8k/configs/Qwen3-30B-A3B-MXFP4A16.yaml\nnum_questions: 1319\n# tests/evals/gsm8k/configs/Qwen3-30B-A3B-MXFP4A16.yaml\nnum_fewshot: 5\n# tests/evals/gsm8k/configs/Qwen3-30B-A3B-MXFP4A16.yaml\nserver_args: \"--enforce-eager --max-model-len 4096\"\n# tests/evals/gsm8k/configs/models-small.txt\nQwen3-30B-A3B-MXFP4A16.yaml\n# vllm/model_executor/layers/fused_moe/oracle/nvfp4.py\n    mxfp4_w4a16_moe_quant_config,\n# vllm/model_executor/layers/fused_moe/oracle/nvfp4.py\ndef make_mxfp4_moe_quant_config(\n# vllm/model_executor/layers/fused_moe/oracle/nvfp4.py\n    w13_scale: torch.Tensor,\n# vllm/model_executor/layers/fused_moe/oracle/nvfp4.py\n    w2_scale: torch.Tensor,",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 32285,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/32285",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_quantization_error_006",
+    "root_cause": "quantization_error",
+    "correct_fix": "fix_quantization",
+    "incident_ticket": "INCIDENT: [Hardware][AMD][CI][Bugfix] Fix AMD Quantization test group | Hardware: NVIDIA B200 | Backend: vLLM 0.8.x. Model: Llama.",
+    "hardware": "NVIDIA B200",
+    "model_name": "Llama",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Error details not extracted from issue",
+    "initial_snippet": "# .buildkite/test-amd.yaml\n  mirror_hardwares: [amdexperimental]\n# tests/quantization/test_compressed_tensors.py\n            assert input_quant_op._forward_method == input_quant_op.forward_cuda\n# tests/quantization/test_configs.py\n    (\"TheBloke/Llama-2-7B-Chat-GPTQ\", None, \"gptq_marlin\"),\n    (\"TheBloke/Llama-2-7B-Chat-GPTQ\", \"marlin\", \"gptq_marlin\"),\n    (\"LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit\", None, \"gptq_marlin\"),\n    (\"LnL-AI/TinyLlama-1.1B-Chat-v1.0-GPTQ-4bit\", \"marlin\", \"gptq_marlin\"),\n    (\"TheBloke/OpenHermes-2.5-Mistral-7B-AWQ\", None, \"awq_marlin\"),\n    (\"TheBloke/OpenHermes-2.5-Mistral-7B-AWQ\", \"marlin\", \"awq_marlin\"),\n# tests/quantization/test_cpu_offload.py\n        \"nm-testing/tinyllama-oneshot-w4a16-channel-v2\",\n# tests/quantization/test_fp8.py\n@pytest.mark.parametrize(\"force_marlin\", [False, True])",
+    "specialist_opinions": {
+      "dispatch": {
+        "opinion": "Quantized weights are being loaded with the wrong scale factors or format assumptions.",
+        "confidence": 0.93,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The quantization format is incompatible with this backend or hardware. Precision handling is broken.",
+        "confidence": 0.85,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The quantization format is incompatible with this backend or hardware. Precision handling is broken.",
+        "confidence": 0.95,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The model config is valid for quantized inference.",
+        "confidence": 0.79,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# .buildkite/test-amd.yaml\n  mirror_hardwares: [amdexperimental, amdproduction]\n# tests/quantization/test_compressed_tensors.py\n@pytest.mark.skipif(\n# tests/quantization/test_compressed_tensors.py\n    not current_platform.is_cuda(), reason=\"This test is skipped on non-CUDA platform.\"\n# tests/quantization/test_compressed_tensors.py\n)\n# tests/quantization/test_compressed_tensors.py\n            assert input_quant_op._forward_method in (\n# tests/quantization/test_compressed_tensors.py\n                input_quant_op.forward_cuda,\n# tests/quantization/test_compressed_tensors.py\n                input_quant_op.forward_hip,\n# tests/quantization/test_compressed_tensors.py\n            )\n# tests/quantization/test_configs.py\nfrom vllm.platforms import current_platform\n# tests/quantization/test_configs.py\n    (",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 31713,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/31713",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_quantization_error_007",
+    "root_cause": "quantization_error",
+    "correct_fix": "fix_quantization",
+    "incident_ticket": "INCIDENT: Register quant scale tensors as buffer | Hardware: NVIDIA H100 | Backend: vLLM 0.8.x. Model: Llama.",
+    "hardware": "NVIDIA H100",
+    "model_name": "Llama",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Error details not extracted from issue",
+    "initial_snippet": "# vllm/attention/layer.py\n    layer._k_scale = torch.tensor(1.0, dtype=torch.float32)\n    layer._v_scale = torch.tensor(1.0, dtype=torch.float32)\n    layer._q_scale = torch.tensor(1.0, dtype=torch.float32)\n    layer._prob_scale = torch.tensor(1.0, dtype=torch.float32)\n    # We also keep q/k/v_scale on host (cpu) memory for attention\n    # backends that require the scales to be on host instead of on device.\n    # e.g. Flashinfer\n    layer._q_scale_float = 1.0\n    layer._k_scale_float = 1.0\n    layer._v_scale_float = 1.0\n    if quant_method is not None and not isinstance(\n        quant_method, UnquantizedLinearMethod\n    ):\n            self, quant_config, prefix, kv_cache_dtype, calculate_kv_scales",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "FP8/INT4 quantization is producing incorrect results. The calibration or format conversion has a bug.",
+        "confidence": 0.78,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Quantized weights are being loaded with the wrong scale factors or format assumptions.",
+        "confidence": 0.81,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The model config is valid for quantized inference.",
+        "confidence": 0.56,
+        "is_correct": false
+      },
+      "loader": {
+        "opinion": "Memory usage is within bounds. Not an OOM issue.",
+        "confidence": 0.74,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/attention/layer.py\nfrom vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase\n# vllm/attention/layer.py\ndef should_load_quant_weights(quant_method: QuantizeMethodBase | None) -> bool:\n# vllm/attention/layer.py\n    \"\"\"Returns whether the quantization method should load quantized weights.\"\"\"\n# vllm/attention/layer.py\n    return quant_method is not None and not isinstance(\n# vllm/attention/layer.py\n        quant_method, UnquantizedLinearMethod\n# vllm/attention/layer.py\n    )\n# vllm/attention/layer.py\n\n# vllm/attention/layer.py\n\n# vllm/attention/layer.py\ndef set_default_quant_scales(layer: nn.Module, register_buffer: bool = False) -> None:\n# vllm/attention/layer.py\n    \"\"\"Sets default quantization scales for the layer.\"\"\"",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 31395,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/31395",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_memory_oom_008",
+    "root_cause": "memory_oom",
+    "correct_fix": "tune_memory_config",
+    "incident_ticket": "INCIDENT: Attempt to fix GPU OOM in a spec-decoding test | Hardware: NVIDIA RTX 4090 | Backend: vLLM 0.8.x. Model: Mpt.",
+    "hardware": "NVIDIA RTX 4090",
+    "model_name": "Mpt",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "python3 offline_inference/spec_decode.py --test --method eagle --num_spec_tokens 3 --dataset-name hf --dataset-path philschmid/mt-bench --num-prompts 80 --temp 0 --top-p 1.0 --top-k -1 --tp 1 --enable-chunked-prefill --max-model-len 2048",
+    "initial_snippet": "# examples/offline_inference/spec_decode.py\n        gpu_memory_utilization=0.8,",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "GPU memory is exhausted. The KV cache or batch size exceeds available VRAM.",
+        "confidence": 0.83,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The memory allocator is running out of space. Chunked prefill or paged attention config should help.",
+        "confidence": 0.77,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The memory allocator is running out of space. Chunked prefill or paged attention config should help.",
+        "confidence": 0.75,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Backend selection is correct for this workload.",
+        "confidence": 0.64,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# examples/offline_inference/spec_decode.py\n        gpu_memory_utilization=0.9,",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 29419,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/29419",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_memory_oom_009",
+    "root_cause": "memory_oom",
+    "correct_fix": "tune_memory_config",
+    "incident_ticket": "INCIDENT: [XPU][NIXL] Add GPUDirect RDMA support for XPU | Hardware: NVIDIA RTX 4090 | Backend: vLLM 0.8.x. Model: Llama.",
+    "hardware": "NVIDIA RTX 4090",
+    "model_name": "Llama",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "export UCX_TLS=ib,rc,ze_copy\n\nexport ZE_AFFINITY_MASK=2,3\nexport model_name=ibnzterrell/Meta-Llama-3.3-70B-Instruct-AWQ-INT4\nexport tp_size=2\n\n\nVLLM_USE_V1=1 VLLM_NIXL_SIDE_CHANNEL_HOST=localhost VLLM_NIXL_SIDE_CHANNEL_PORT=5577 VLLM_WORKER_MULTIPROC_METHOD=spawn VLLM_ENABLE_V1_MULTIPROCESSING=1 vllm serve $model_name -tp $tp_size --host localhost --port 7101 --seed 42 --enforce-eager --dtype float16 --gpu-memory-utilization 0.9 --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv",
+    "initial_snippet": "# docker/Dockerfile.xpu\n# install nixl from source code\nENV NIXL_VERSION=0.7.0\nRUN python /workspace/vllm/tools/install_nixl_from_source_ubuntu.py\n# vllm/distributed/kv_transfer/kv_connector/v1/nixl_connector.py\n    \"xpu\": (\"cpu\",),\n            if self.kv_buffer_device == \"cuda\":",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "The memory allocator is running out of space. Chunked prefill or paged attention config should help.",
+        "confidence": 0.94,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Out of memory during inference. Memory configuration needs tuning \u2014 reduce max_model_len or batch size.",
+        "confidence": 0.82,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "GPU architecture is fine. The hardware supports this model.",
+        "confidence": 0.65,
+        "is_correct": false
+      },
+      "loader": {
+        "opinion": "Weight layout matches expected format. No conversion issues.",
+        "confidence": 0.68,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# docker/Dockerfile.xpu\n# install NIXL and UCX from source code\n# docker/Dockerfile.xpu\nARG UCX_VERSION=e5d98879705239d254ede40b4a52891850cb5349\n# docker/Dockerfile.xpu\nARG NIXL_VERSION=0.7.0\n# docker/Dockerfile.xpu\n\n# docker/Dockerfile.xpu\nRUN apt-get update && apt-get install -y \\\n# docker/Dockerfile.xpu\n    pciutils \\\n# docker/Dockerfile.xpu\n    net-tools \\\n# docker/Dockerfile.xpu\n    iproute2 \\\n# docker/Dockerfile.xpu\n    hwloc \\\n# docker/Dockerfile.xpu\n    numactl \\",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 35270,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/35270",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_runtime_loader_010",
+    "root_cause": "runtime_loader",
+    "correct_fix": "fix_runtime_path",
+    "incident_ticket": "INCIDENT: [build] fix priority of cuda-compat libraries in ld loading | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Deepseek.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Deepseek",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "pytest tests/cuda/test_cuda_compatibility_path.py -v\n# Change cu129 to cu130 when inside CUDA 13.0 container\nexport VLLM_ENABLE_CUDA_COMPATIBILITY=1\n# Change 12.9 to 13.0 when inside CUDA 13.0 container\nexport VLLM_CUDA_COMPATIBILITY_PATH=\"/usr/local/cuda-12.9/compat\"\ndocker run -it --entrypoint \"\" --runtime nvidia --gpus all \\\n# Change cu129 to cu130 when inside CUDA 13.0 container\n$ rm -f /etc/ld.so.conf.d/cuda-compat.conf\n$ ldconfig -p | grep libcuda\nlibcudart.so.12 (libc6,x86-64) => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.12",
+    "initial_snippet": "# docker/Dockerfile\n# Ensure CUDA compatibility library is loaded\nRUN echo \"/usr/local/cuda-$(echo \"$CUDA_VERSION\" | cut -d. -f1,2)/compat/\" > /etc/ld.so.conf.d/cuda-compat.conf && ldconfig\nRUN echo \"/usr/local/cuda-$(echo \"$CUDA_VERSION\" | cut -d. -f1,2)/compat/\" > /etc/ld.so.conf.d/cuda-compat.conf && ldconfig\n# docs/usage/troubleshooting.md\nIf you see an error like `RuntimeError: CUDA error: the provided PTX was compiled with an unsupported toolchain.`, it means that the CUDA PTX in vLLM's wheels was compiled with a toolchain unsupported by your system. The released vLLM wheels have to be compiled with a specific version of CUDA toolkit, and the compiled code might fail to run on lower versions of CUDA drivers. Read [cuda compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/) for more details. The solution is to install `cuda-compat` package from your package manager. For example, on Ubuntu, you can run `sudo apt-get install cuda-compat-12-9`, and then add `export LD_LIBRARY_PATH=/usr/local/cuda-12.9/compat:$LD_LIBRARY_PATH` to your `.bashrc` file. When successfully installed, you should see that the output of `nvidia-smi` will show `CUDA Version: 12.9`. Note that we use CUDA 12.9 as an example here, you may want to install a higher version of cuda-compat package in case vLLM's default CUDA version goes higher.",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "CUDA/ROCm runtime loading is failing. The library search path needs to be updated.",
+        "confidence": 0.82,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The loader is searching for libraries in the wrong directory. Path configuration needs fixing.",
+        "confidence": 0.79,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "Model weights and config are properly formatted.",
+        "confidence": 0.67,
+        "is_correct": false
+      },
+      "dispatch": {
+        "opinion": "The kernel compilation succeeded. This isn't a kernel issue.",
+        "confidence": 0.62,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# docker/Dockerfile\n# Enable CUDA forward compatibility by setting '-e VLLM_ENABLE_CUDA_COMPATIBILITY=1'\n# docker/Dockerfile\n# Only needed for datacenter/professional GPUs with older drivers.\n# docker/Dockerfile\n# See: https://docs.nvidia.com/deploy/cuda-compatibility/\n# docker/Dockerfile\nENV VLLM_ENABLE_CUDA_COMPATIBILITY=0\n# docker/Dockerfile\n# Enable CUDA forward compatibility by setting '-e VLLM_ENABLE_CUDA_COMPATIBILITY=1'\n# docker/Dockerfile\n# Only needed for datacenter/professional GPUs with older drivers.\n# docker/Dockerfile\n# See: https://docs.nvidia.com/deploy/cuda-compatibility/\n# docker/Dockerfile\nENV VLLM_ENABLE_CUDA_COMPATIBILITY=0\n# docs/getting_started/installation/gpu.cuda.inc.md\n#### Running on Systems with Older CUDA Drivers\n# docs/getting_started/installation/gpu.cuda.inc.md\n",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 33992,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/33992",
+    "source_issues": [
+      34226
+    ]
+  },
+  {
+    "id": "scraped_model_config_011",
+    "root_cause": "model_config",
+    "correct_fix": "update_model_config",
+    "incident_ticket": "INCIDENT: [Model] Fix gpt-oss batch invariance | Hardware: NVIDIA H100 | Backend: vLLM 0.8.x. Model: Moe.",
+    "hardware": "NVIDIA H100",
+    "model_name": "Moe",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "FAILED tests/v1/determinism/test_batch_invariance.py::test_logprobs_bitwise_batch_invariance_bs1_vs_bsN[FLASH_ATTN] - Failed: Batch invariance violated in 32/32 prompts. See output above for details.\nFAILED tests/v1/determinism/test_batch_invariance.py::test_logprobs_bitwise_batch_invariance_bs1_vs_bsN[TRITON_ATTN] - Failed: Batch invariance violated in 32/32 prompts. See output above for details.\n============================================================================================= 2 failed, 15 deselected, 17 warnings in 67.67s (0:01:07) ==============================================================================================\n================================================================================================= 2 passed, 15 deselected, 17 warnings in 100.57s (0:01:40) =============================================================================================\nPython version               : 3.12.3 (main, Jan 22 2026, 20:57:42) [GCC 13.3.0] (64-bit runtime)\nCUDA / GPU Info\nIs CUDA available            : True\nCUDA runtime version         : 13.1.115\nCUDA_MODULE_LOADING set to   :\n/usr/lib/x86_64-linux-gnu/libcudnn_engines_runtime_compiled.so.9.17.1",
+    "initial_snippet": "# vllm/model_executor/layers/linear.py\n    is_layer_moe_router_gate,\n        if (\n            vllm_is_batch_invariant()\n            and current_platform.is_cuda_alike()\n            and is_layer_moe_router_gate(getattr(layer, \"prefix\", \"\"))\n        ):\n# vllm/model_executor/models/gpt_oss.py\nfrom vllm.model_executor.layers.linear import QKVParallelLinear, RowParallelLinear\n        self.router = torch.nn.Linear(config.hidden_size, config.num_local_experts)",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "The model configuration doesn't match the checkpoint. There's a mismatch in model parameters.",
+        "confidence": 0.78,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "The model configuration doesn't match the checkpoint. There's a mismatch in model parameters.",
+        "confidence": 0.76,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The GPU has sufficient capability for this model.",
+        "confidence": 0.72,
+        "is_correct": false
+      },
+      "runtime": {
+        "opinion": "Runtime and driver are functioning correctly.",
+        "confidence": 0.86,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/model_executor/layers/linear.py\n        if vllm_is_batch_invariant() and current_platform.is_cuda_alike():\n# vllm/model_executor/models/gpt_oss.py\nfrom vllm.model_executor.layers.linear import (\n# vllm/model_executor/models/gpt_oss.py\n    QKVParallelLinear,\n# vllm/model_executor/models/gpt_oss.py\n    ReplicatedLinear,\n# vllm/model_executor/models/gpt_oss.py\n    RowParallelLinear,\n# vllm/model_executor/models/gpt_oss.py\n)\n# vllm/model_executor/models/gpt_oss.py\n        self.router = ReplicatedLinear(\n# vllm/model_executor/models/gpt_oss.py\n            config.hidden_size,\n# vllm/model_executor/models/gpt_oss.py\n            config.num_local_experts,\n# vllm/model_executor/models/gpt_oss.py\n            bias=True,",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 35404,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/35404",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_memory_oom_012",
+    "root_cause": "memory_oom",
+    "correct_fix": "tune_memory_config",
+    "incident_ticket": "INCIDENT: [CPU][IBM Z][Dockerfile] Fix IBM Z builds | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Moe.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Moe",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "(APIServer pid=1) INFO 01-28 09:48:59 [model.py:541] Resolved architecture: GraniteForCausalLM\n(APIServer pid=1) INFO 01-28 09:48:59 [arg_utils.py:1953] Chunked prefill is not supported for POWER, S390X and RISC-V CPUs; disabling it for V1 backend.\n(APIServer pid=1) INFO 01-28 09:48:59 [arg_utils.py:1959] Prefix caching is not supported for POWER, S390X and RISC-V CPUs; disabling it for V1 backend.\n(APIServer pid=1) WARNING 01-28 09:48:59 [cpu.py:158] VLLM_CPU_KVCACHE_SPACE not set. Using 171.88 GiB for KV cache.\n(EngineCore_DP0 pid=88) INFO 01-28 09:49:11 [core.py:96] Initializing a V1 LLM engine (v0.15.0rc2.dev32+g36d450e3b.d20260128) with config: model='ibm-granite/granite-3.3-8b-instruct', speculative_config=None, tokenizer='ibm-granite/granite-3.3-8b-instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=2048, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, disable_custom_all_reduce=True, quantization=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cpu, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_fallback=False, disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=ibm-granite/granite-3.3-8b-instruct, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'level': None, 'mode': <CompilationMode.DYNAMO_TRACE_ONCE: 2>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'splitting_ops': [], 'compile_mm_encoder': False, 'compile_sizes': None, 'compile_ranges_split_points': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'dce': True, 'size_asserts': False, 'nan_asserts': False, 'epilogue_fusion': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'eliminate_noops': True, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False}, 'max_cudagraph_capture_size': None, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'static_all_moe_layers': []}\n[W128 09:49:11.614654114 utils.cpp:76] Warning: numa_migrate_pages failed. errno: 1 (function init_cpu_threads_env)\n[W128 09:49:11.614675523 utils.cpp:100] Warning: numa_set_membind failed. errno: 1 (function init_cpu_threads_env)\n(EngineCore_DP0 pid=88) WARNING 01-28 09:57:51 [vllm.py:669] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.\n(EngineCore_DP0 pid=88) WARNING 01-28 09:57:51 [cpu.py:158] VLLM_CPU_KVCACHE_SPACE not set. Using 171.88 GiB for KV cache.",
+    "initial_snippet": "# docker/Dockerfile.s390x\nARG BASE_UBI_IMAGE_TAG=9.5-1736404155\n    which procps findutils tar vim git gcc-toolset-14 gcc-toolset-14-libatomic-devel patch zlib-devel \\\nARG TORCH_VISION_VERSION=v0.23.0\n    uv pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu && \\\n    \n\n\n     sed -i '/^torch/d' requirements/build.txt && \\\n    uv pip install -v \\    \n        -r requirements/build.txt \\\n    useradd --uid 2000 --gid 0 vllm && \\",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "Out of memory during inference. Memory configuration needs tuning \u2014 reduce max_model_len or batch size.",
+        "confidence": 0.8,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "GPU memory is exhausted. The KV cache or batch size exceeds available VRAM.",
+        "confidence": 0.76,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Backend selection is correct for this workload.",
+        "confidence": 0.82,
+        "is_correct": false
+      },
+      "kernel": {
+        "opinion": "GPU architecture is fine. The hardware supports this model.",
+        "confidence": 0.69,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# docker/Dockerfile.s390x\nARG BASE_UBI_IMAGE_TAG=9.6\n# docker/Dockerfile.s390x\n    which procps findutils tar vim git gcc-toolset-14 gcc-toolset-14-binutils gcc-toolset-14-libatomic-devel patch zlib-devel \\\n# docker/Dockerfile.s390x\nENV GCC_TOOLSET_ROOT=/opt/rh/gcc-toolset-14/root \\\n# docker/Dockerfile.s390x\n    PATH=/opt/rh/gcc-toolset-14/root/usr/bin:/usr/local/bin:/usr/bin:/bin \\\n# docker/Dockerfile.s390x\n    LD_LIBRARY_PATH=/opt/rh/gcc-toolset-14/root/usr/lib64:/usr/local/lib:/usr/lib64 \\\n# docker/Dockerfile.s390x\n    LIBRARY_PATH=/opt/rh/gcc-toolset-14/root/usr/lib64 \\\n# docker/Dockerfile.s390x\n    PKG_CONFIG_PATH=/opt/rh/gcc-toolset-14/root/usr/lib64/pkgconfig\n# docker/Dockerfile.s390x\n\n# docker/Dockerfile.s390x\nARG TORCH_VISION_VERSION=v0.25.0\n# docker/Dockerfile.s390x\n    uv pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu && \\",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 33243,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/33243",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_quantization_error_013",
+    "root_cause": "quantization_error",
+    "correct_fix": "fix_quantization",
+    "incident_ticket": "INCIDENT: [Apple Silicon] fix missing symbols when build from source on Mac with Apple Silicon | Hardware: NVIDIA H100 | Backend: vLLM 0.8.x. Model: Opt.",
+    "hardware": "NVIDIA H100",
+    "model_name": "Opt",
+    "backend": "vLLM 0.8.x",
+    "initial_log": ">>> import vllm._C    # without error",
+    "initial_snippet": "# csrc/cpu/torch_bindings.cpp\n#if defined(__AVX512F__) || defined(__aarch64__)",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "Quantized weights are being loaded with the wrong scale factors or format assumptions.",
+        "confidence": 0.77,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The quantization format is incompatible with this backend or hardware. Precision handling is broken.",
+        "confidence": 0.8,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "GPU architecture supports the needed quantization instructions.",
+        "confidence": 0.83,
+        "is_correct": false
+      },
+      "loader": {
+        "opinion": "GPU architecture supports the needed quantization instructions.",
+        "confidence": 0.82,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# csrc/cpu/torch_bindings.cpp\n#if defined(__AVX512F__) || (defined(__aarch64__) && !defined(__APPLE__))",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 21380,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/21380",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_backend_selector_014",
+    "root_cause": "backend_selector",
+    "correct_fix": "switch_backend",
+    "incident_ticket": "INCIDENT: [Attn,KV-cache] Use per-head scales in the attention selector | Hardware: NVIDIA RTX 4090 | Backend: vLLM 0.8.x. Model: Mpt.",
+    "hardware": "NVIDIA RTX 4090",
+    "model_name": "Mpt",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Error details not extracted from issue",
+    "initial_snippet": "# vllm/model_executor/layers/attention/attention.py\n        if getattr(quant_config, \"kv_cache_scheme\", None) is not None:\n# vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py\n        if strategy == QuantizationStrategy.ATTN_HEAD:\n            assert layer.impl.supports_per_head_quant_scales, (\n                f\"Layer {layer.__class__.__name__} with implementation \"\n                f\"{layer.impl.__class__.__name__} does not support per-head scales.\"\n            )\n            n_scales = int(layer.num_kv_heads)\n        else:\n            n_scales = 1\n# vllm/v1/attention/backend.py\n    supports_per_head_quant_scales: bool = False\n# vllm/v1/attention/backends/flash_attn.py\n        self.supports_per_head_quant_scales = (",
+    "specialist_opinions": {
+      "dispatch": {
+        "opinion": "The auto-selection logic is picking the wrong kernel path. Manual backend override should fix this.",
+        "confidence": 0.88,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The wrong attention/compute backend is being selected. The dispatch logic is choosing an incompatible or suboptimal path.",
+        "confidence": 0.85,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "All runtime libraries are loaded correctly.",
+        "confidence": 0.59,
+        "is_correct": false
+      },
+      "kernel": {
+        "opinion": "The GPU architecture is fully supported.",
+        "confidence": 0.85,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# tests/kernels/attention/test_attention_selector.py\n\n# tests/kernels/attention/test_attention_selector.py\n\n# tests/kernels/attention/test_attention_selector.py\n@pytest.mark.parametrize(\n# tests/kernels/attention/test_attention_selector.py\n    \"backend_name,flash_attn_version,should_succeed\",\n# tests/kernels/attention/test_attention_selector.py\n    [\n# tests/kernels/attention/test_attention_selector.py\n        (\"FLASH_ATTN\", 3, True),  # FA3 supports per-head quant scales\n# tests/kernels/attention/test_attention_selector.py\n        (\"FLASH_ATTN\", 2, False),  # FA2 does not support per-head quant scales\n# tests/kernels/attention/test_attention_selector.py\n        (\"FLASHINFER\", None, False),  # FlashInfer does not support\n# tests/kernels/attention/test_attention_selector.py\n        (\"FLEX_ATTENTION\", None, False),  # Flex does not support\n# tests/kernels/attention/test_attention_selector.py\n    ],",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 34281,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/34281",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_backend_selector_015",
+    "root_cause": "backend_selector",
+    "correct_fix": "switch_backend",
+    "incident_ticket": "INCIDENT: [PD] Fix `get_attn_backend` usage in transfer connectors | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Gemma.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Gemma",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "VLLM_LOGGING_LEVEL=DEBUG vllm serve google/gemma-3-4b-it --port 8004 --enforce-eager --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\"}'\n...\n# Nixl wrongly selects FA for gemma3 instead of TritonATTN\ndistributed/.../v1/nixl_connector.py:319] NixlConnector setting KV cache layout to HND for better xfer performance.\n(EngineCore_DP0 pid=2826069) DEBUG 01-07 18:52:37 [distributed/.../v1/nixl_connector.py:967] Detected attention backend FLASH_ATTN",
+    "initial_snippet": "# tests/v1/kv_connector/unit/test_nixl_connector.py\n        patch(f\"{nixl_module}.get_attn_backend\") as mock_get_attn_backend,\n# vllm/distributed/kv_transfer/kv_connector/utils.py\nfrom typing import TYPE_CHECKING, Literal\nfrom vllm.config import get_current_vllm_config\n# vllm/distributed/kv_transfer/kv_connector/v1/mooncake_connector.py\nfrom vllm.distributed.kv_transfer.kv_connector.utils import TpKVTopology\nfrom vllm.v1.attention.selector import get_attn_backend\n        backend = get_attn_backend(\n            self.model_config.get_head_size(),\n            self.model_config.dtype,\n            self.cache_config.cache_dtype,\n            self.block_size,\n            use_mla=self.use_mla,\n        )",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "The auto-selection logic is picking the wrong kernel path. Manual backend override should fix this.",
+        "confidence": 0.76,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The auto-selection logic is picking the wrong kernel path. Manual backend override should fix this.",
+        "confidence": 0.93,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "All runtime libraries are loaded correctly.",
+        "confidence": 0.83,
+        "is_correct": false
+      },
+      "dispatch": {
+        "opinion": "The GPU architecture is fully supported.",
+        "confidence": 0.74,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# tests/v1/kv_connector/unit/test_nixl_connector.py\n        patch(f\"{nixl_module}.get_current_attn_backend\") as mock_get_attn_backend,\n# vllm/distributed/kv_transfer/kv_connector/utils.py\nfrom typing import TYPE_CHECKING, Any, Literal, cast\n# vllm/distributed/kv_transfer/kv_connector/utils.py\nfrom vllm.config import VllmConfig, get_current_vllm_config, get_layers_from_vllm_config\n# vllm/distributed/kv_transfer/kv_connector/utils.py\nfrom vllm.model_executor.layers.attention_layer_base import AttentionLayerBase\n# vllm/distributed/kv_transfer/kv_connector/utils.py\n\n# vllm/distributed/kv_transfer/kv_connector/utils.py\n\n# vllm/distributed/kv_transfer/kv_connector/utils.py\ndef get_current_attn_backend(vllm_config: VllmConfig):\n# vllm/distributed/kv_transfer/kv_connector/utils.py\n    layer_type = cast(type[Any], AttentionLayerBase)\n# vllm/distributed/kv_transfer/kv_connector/utils.py\n    layers = get_layers_from_vllm_config(vllm_config, layer_type, None)\n# vllm/distributed/kv_transfer/kv_connector/utils.py\n    if layers:",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 31988,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/31988",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_backend_selector_016",
+    "root_cause": "backend_selector",
+    "correct_fix": "switch_backend",
+    "incident_ticket": "INCIDENT: Add `--attention-backend auto` option | Hardware: NVIDIA H100 | Backend: vLLM 0.8.x. Model: Moe.",
+    "hardware": "NVIDIA H100",
+    "model_name": "Moe",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "vllm serve openai/whisper-large-v3-turbo --attention-backend auto",
+    "initial_snippet": "# vllm/config/attention.py\n    \"\"\"Attention backend to use. If None, will be selected automatically.\"\"\"\n        \"\"\"Enable parsing of the `backend` enum type from string.\"\"\"\n# vllm/engine/arg_utils.py\n            # Convert string to enum if needed (CLI parsing returns a string)\n            if isinstance(self.attention_backend, str):\n                attention_config.backend = AttentionBackendEnum[\n                    self.attention_backend.upper()\n                ]\n            else:\n                attention_config.backend = self.attention_backend",
+    "specialist_opinions": {
+      "loader": {
+        "opinion": "Backend selection is incorrect for this hardware/model combination. Need to switch to a compatible backend.",
+        "confidence": 0.84,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "The wrong attention/compute backend is being selected. The dispatch logic is choosing an incompatible or suboptimal path.",
+        "confidence": 0.9,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The GPU architecture is fully supported.",
+        "confidence": 0.73,
+        "is_correct": false
+      },
+      "kernel": {
+        "opinion": "The GPU architecture is fully supported.",
+        "confidence": 0.69,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# tests/kernels/attention/test_attention_selector.py\n@pytest.mark.parametrize(\"auto_value\", [\"auto\", \"AUTO\", \"Auto\"])\n# tests/kernels/attention/test_attention_selector.py\ndef test_auto_backend_string(auto_value: str):\n# tests/kernels/attention/test_attention_selector.py\n    \"\"\"Test that 'auto' string value triggers automatic backend selection.\"\"\"\n# tests/kernels/attention/test_attention_selector.py\n    # Using \"auto\" should result in backend=None (automatic selection)\n# tests/kernels/attention/test_attention_selector.py\n    attention_config = AttentionConfig(backend=auto_value)\n# tests/kernels/attention/test_attention_selector.py\n    assert attention_config.backend is None\n# tests/kernels/attention/test_attention_selector.py\n\n# tests/kernels/attention/test_attention_selector.py\n\n# tests/kernels/attention/test_attention_selector.py\ndef test_auto_backend_selection_behavior():\n# tests/kernels/attention/test_attention_selector.py\n    \"\"\"Test that 'auto' backend behaves same as None (automatic selection).\"\"\"",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 35738,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/35738",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_memory_oom_017",
+    "root_cause": "memory_oom",
+    "correct_fix": "tune_memory_config",
+    "incident_ticket": "INCIDENT: CUDA graph decode capture crash in AITER FlashAttention | Hardware: AMD MI300X | Backend: vLLM 0.8.x. Model: Mpt.",
+    "hardware": "AMD MI300X",
+    "model_name": "Mpt",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Error details not extracted from issue",
+    "initial_snippet": "# vllm/v1/attention/backends/rocm_aiter_fa.py\n                # or when sliding window is enabled\n                if self.sliding_window[0] != -1 or decode_max_query_len > 1:\n                        \"Shuffle KV cache layout is not supported with sliding \"\n                        \"window or speculative decoding (multi-token decode).\"",
+    "specialist_opinions": {
+      "runtime": {
+        "opinion": "The memory allocator is running out of space. Chunked prefill or paged attention config should help.",
+        "confidence": 0.88,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The memory allocator is running out of space. Chunked prefill or paged attention config should help.",
+        "confidence": 0.82,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "GPU memory is exhausted. The KV cache or batch size exceeds available VRAM.",
+        "confidence": 0.78,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "GPU architecture is fine. The hardware supports this model.",
+        "confidence": 0.65,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/v1/attention/backends/rocm_aiter_fa.py\n                if decode_max_query_len > 1:\n# vllm/v1/attention/backends/rocm_aiter_fa.py\n                        \"Shuffle KV cache layout is not supported with \"\n# vllm/v1/attention/backends/rocm_aiter_fa.py\n                        \"speculative decoding (multi-token decode).\"",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 36042,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/36042",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_arch_guard_018",
+    "root_cause": "arch_guard",
+    "correct_fix": "relax_arch_check",
+    "incident_ticket": "INCIDENT: [Bug]: Qwen3.5 `AttributeError: 'MRotaryEmbedding' object has no attribute 'truncate'` with RoPE Scaling | Hardware: NVIDIA RTX 4090 | Backend: vLLM 0.8.x. Model: Qwen.",
+    "hardware": "NVIDIA RTX 4090",
+    "model_name": "Qwen",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "CUDA used to build PyTorch   : 12.9\nPython version               : 3.12.12 (main, Oct 10 2025, 08:52:57) [GCC 11.4.0] (64-bit runtime)\nCUDA / GPU Info\nIs CUDA available            : True\nCUDA runtime version         : 12.9.86\nCUDA_MODULE_LOADING set to   :\nHIP runtime version          : N/A\nMIOpen runtime version       : N/A\nArchitecture:                            x86_64\n[pip3] nvidia-cuda-cupti-cu12==12.9.79",
+    "initial_snippet": "# Code snippet not extracted from diff",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "This is a capability check issue. The GPU supports the needed instructions but fails the hardcoded arch whitelist.",
+        "confidence": 0.9,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The dispatch table maps arch to kernel. This architecture has no entry. Adding it to the arch check should fix it.",
+        "confidence": 0.78,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "Possible kernel incompatibility \u2014 this GPU may lack required instructions.",
+        "confidence": 0.8,
+        "is_correct": false
+      },
+      "dispatch": {
+        "opinion": "The backend configuration looks correct. This might be a driver issue.",
+        "confidence": 0.84,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/model_executor/layers/rotary_embedding/mrope.py\n        truncate: bool = True,\n# vllm/model_executor/layers/rotary_embedding/mrope.py\n        self.truncate = truncate",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 35080,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/35080",
+    "source_issues": [
+      35056
+    ]
+  },
+  {
+    "id": "scraped_model_config_019",
+    "root_cause": "model_config",
+    "correct_fix": "update_model_config",
+    "incident_ticket": "INCIDENT: [Bug]: 4*2080ti 22g deploy Qwen3.5-35B-A3B fail:2080 Ti does not support bfloat16 | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Mpt.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Mpt",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "torch._dynamo.exc.SkipFrame: BF16 is not supported",
+    "initial_snippet": "# vllm/model_executor/models/qwen3_5.py\n                    dtype=config.dtype,\n                    dtype=config.dtype,\n# vllm/model_executor/models/qwen3_next.py\n            dtype=config.dtype,\n                    dtype=config.dtype,\n                    dtype=config.dtype,",
+    "specialist_opinions": {
+      "loader": {
+        "opinion": "Shape mismatch during model loading \u2014 the config specifies different dimensions than the checkpoint contains.",
+        "confidence": 0.93,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The model configuration doesn't match the checkpoint. There's a mismatch in model parameters.",
+        "confidence": 0.82,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Backend selection is appropriate for this model.",
+        "confidence": 0.8,
+        "is_correct": false
+      },
+      "kernel": {
+        "opinion": "Runtime and driver are functioning correctly.",
+        "confidence": 0.72,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 35617,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/35617",
+    "source_issues": [
+      35414
+    ]
+  },
+  {
+    "id": "scraped_quantization_error_020",
+    "root_cause": "quantization_error",
+    "correct_fix": "fix_quantization",
+    "incident_ticket": "INCIDENT: Add mixed precision support for modelopt | Hardware: NVIDIA H100 | Backend: vLLM 0.8.x. Model: Moe.",
+    "hardware": "NVIDIA H100",
+    "model_name": "Moe",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "{\n    \"quantized_layers\": {\n        \"quantized_layers\": {\n            \"backbone.layers.0.mixer.in_proj\": {\n                \"quant_algo\": \"FP8\"\n            },\n            \"backbone.layers.0.mixer.out_proj\": {\n                \"quant_algo\": \"FP8\"\n            },\n            \"backbone.layers.1.mixer.experts.0.up_proj\": {\n                \"quant_algo\": \"NVFP4\",\n                \"group_size\": 16\n            },\n            \"backbone.layers.1.mixer.experts.0.down_proj\": {\n                \"quant_algo\": \"NVF",
+    "initial_snippet": "# vllm/model_executor/layers/quantization/__init__.py\n    from .modelopt import ModelOptFp8Config, ModelOptMxFp8Config, ModelOptNvFp4Config\n# vllm/model_executor/layers/quantization/modelopt.py\n            # Compressed-tensors style format:\n            kv_cache_quant_method = config.get(\"kv_cache_quant_algo\")\n        \"\"\"Detect if this ModelOpt config should be used based on\n        quantization config.\"\"\"\n\n        if hf_quant_cfg is None:\n            return None\n\n        # Use the community standard 'quant_method'\n        quant_method = hf_quant_cfg.get(\"quant_method\", \"\").lower()\n\n        # Only proceed if the method is explicitly \"modelopt\"",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "FP8/INT4 quantization is producing incorrect results. The calibration or format conversion has a bug.",
+        "confidence": 0.81,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "FP8/INT4 quantization is producing incorrect results. The calibration or format conversion has a bug.",
+        "confidence": 0.82,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Memory usage is within bounds. Not an OOM issue.",
+        "confidence": 0.68,
+        "is_correct": false
+      },
+      "runtime": {
+        "opinion": "The model config is valid for quantized inference.",
+        "confidence": 0.67,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/config/model.py\n                \"modelopt_mixed\",\n# vllm/model_executor/layers/quantization/__init__.py\n    \"modelopt_mixed\",\n# vllm/model_executor/layers/quantization/__init__.py\n    from .modelopt import (\n# vllm/model_executor/layers/quantization/__init__.py\n        ModelOptFp8Config,\n# vllm/model_executor/layers/quantization/__init__.py\n        ModelOptMixedPrecisionConfig,\n# vllm/model_executor/layers/quantization/__init__.py\n        ModelOptMxFp8Config,\n# vllm/model_executor/layers/quantization/__init__.py\n        ModelOptNvFp4Config,\n# vllm/model_executor/layers/quantization/__init__.py\n    )\n# vllm/model_executor/layers/quantization/__init__.py\n        \"modelopt_mixed\": ModelOptMixedPrecisionConfig,\n# vllm/model_executor/layers/quantization/modelopt.py\n    # MIXED_PRECISION,",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 35047,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/35047",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_model_config_021",
+    "root_cause": "model_config",
+    "correct_fix": "update_model_config",
+    "incident_ticket": "INCIDENT: Molmo2: Enable quantized weight mapping for vision backbone | Hardware: NVIDIA H100 | Backend: vLLM 0.8.x. Model: Mpt.",
+    "hardware": "NVIDIA H100",
+    "model_name": "Mpt",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "vllm serve tollea1234/Molmo2-4B-FP8 \\\n    --trust-remote-code \\\n    --max-model-len 4096",
+    "initial_snippet": "# vllm/model_executor/models/molmo2.py\n    BaseDummyInputsBuilder,\n            \"image_pooling_2d.wq.\": \"image_pooling_2d.q_proj.\",\n            \"image_pooling_2d.wk.\": \"image_pooling_2d.k_proj.\",\n            \"image_pooling_2d.wv.\": \"image_pooling_2d.v_proj.\",\n            \"image_pooling_2d.wo.\": \"image_pooling_2d.o_proj.\",\n            \"image_projector.w1.\": \"image_projector.gate_proj.\",\n            \"image_projector.w3.\": \"image_projector.up_proj.\",\n            \"image_projector.w2.\": \"image_projector.down_proj.\",",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "Shape mismatch during model loading \u2014 the config specifies different dimensions than the checkpoint contains.",
+        "confidence": 0.81,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Config values don't align with the actual checkpoint structure. The config needs updating.",
+        "confidence": 0.94,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The GPU has sufficient capability for this model.",
+        "confidence": 0.8,
+        "is_correct": false
+      },
+      "loader": {
+        "opinion": "Weight conversion completed without errors.",
+        "confidence": 0.85,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/model_executor/models/molmo2.py\nfrom vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder\n# vllm/model_executor/models/molmo2.py\n        prefix: str = \"\",\n# vllm/model_executor/models/molmo2.py\n            prefix=f\"{prefix}.w1\",\n# vllm/model_executor/models/molmo2.py\n            prefix=f\"{prefix}.w2\",\n# vllm/model_executor/models/molmo2.py\n            prefix=f\"{prefix}.merged_qkv\",\n# vllm/model_executor/models/molmo2.py\n            prefix=f\"{prefix}.wo\",\n# vllm/model_executor/models/molmo2.py\n            prefix=f\"{prefix}.feed_forward\",\n# vllm/model_executor/models/molmo2.py\n        prefix: str = \"\",\n# vllm/model_executor/models/molmo2.py\n            prefix=f\"{prefix}.q_proj\",\n# vllm/model_executor/models/molmo2.py\n            prefix=f\"{prefix}.merged_kv\",",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 32385,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/32385",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_model_config_022",
+    "root_cause": "model_config",
+    "correct_fix": "update_model_config",
+    "incident_ticket": "INCIDENT: [ROCm][Quantization] Add Composable Kernel (CK) backend support for M\u2026 | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Moe.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Moe",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Error details not extracted from issue",
+    "initial_snippet": "# vllm/model_executor/layers/quantization/mxfp4.py\n    elif current_platform.is_rocm() and has_triton_kernels():\n        logger.info_once(\"Using Triton backend\")\n        return Mxfp4Backend.TRITON\n\n\n",
+    "specialist_opinions": {
+      "loader": {
+        "opinion": "The model configuration doesn't match the checkpoint. There's a mismatch in model parameters.",
+        "confidence": 0.76,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "Shape mismatch during model loading \u2014 the config specifies different dimensions than the checkpoint contains.",
+        "confidence": 0.76,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The model configuration doesn't match the checkpoint. There's a mismatch in model parameters.",
+        "confidence": 0.78,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "The GPU has sufficient capability for this model.",
+        "confidence": 0.74,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/_aiter_ops.py\n    hidden_pad: int = 0,\n# vllm/_aiter_ops.py\n    intermediate_pad: int = 0,\n# vllm/_aiter_ops.py\n    bias1: torch.Tensor | None = None,\n# vllm/_aiter_ops.py\n    bias2: torch.Tensor | None = None,\n# vllm/_aiter_ops.py\n        hidden_pad=hidden_pad,\n# vllm/_aiter_ops.py\n        intermediate_pad=intermediate_pad,\n# vllm/_aiter_ops.py\n        bias1=bias1,\n# vllm/_aiter_ops.py\n        bias2=bias2,\n# vllm/_aiter_ops.py\ndef _rocm_aiter_fused_topk_impl(\n# vllm/_aiter_ops.py\n    x: torch.Tensor,",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 34301,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/34301",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_quantization_error_023",
+    "root_cause": "quantization_error",
+    "correct_fix": "fix_quantization",
+    "incident_ticket": "INCIDENT: [V1] Fully Transparent Implementation of CPU Offloading | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Llama.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Llama",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Error details not extracted from issue",
+    "initial_snippet": "# tests/basic_correctness/test_cpu_offload.py\nimport pytest\n\n@pytest.fixture(scope=\"function\", autouse=True)\ndef use_v0_only(monkeypatch):\n    monkeypatch.setenv('VLLM_USE_V1', '0')\n\n\n# tests/quantization/test_cpu_offload.py\n@pytest.fixture(scope=\"function\", autouse=True)\ndef use_v0_only(monkeypatch):\n    # Fall back to V0 if cpu offloading is enabled.\n    # Fixture is required to that baseline uses V0.\n    monkeypatch.setenv('VLLM_USE_V1', '0')\n",
+    "specialist_opinions": {
+      "dispatch": {
+        "opinion": "FP8/INT4 quantization is producing incorrect results. The calibration or format conversion has a bug.",
+        "confidence": 0.84,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "FP8/INT4 quantization is producing incorrect results. The calibration or format conversion has a bug.",
+        "confidence": 0.92,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The model config is valid for quantized inference.",
+        "confidence": 0.7,
+        "is_correct": false
+      },
+      "kernel": {
+        "opinion": "Runtime libraries loaded without issues.",
+        "confidence": 0.81,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# CMakeLists.txt\n  \"csrc/cuda_view.cu\"\n# csrc/cuda_view.cu\n#include <torch/all.h>\n# csrc/cuda_view.cu\n#include <torch/cuda.h>\n# csrc/cuda_view.cu\n#include <cuda_runtime.h>\n# csrc/cuda_view.cu\n\n# csrc/cuda_view.cu\n// This function assumes that `cpu_tensor` is a CPU tensor allocated with pinned\n# csrc/cuda_view.cu\n// memory, and that UVA (Unified Virtual Addressing) is enabled.\n# csrc/cuda_view.cu\ntorch::Tensor get_cuda_view_from_cpu_tensor(torch::Tensor& cpu_tensor) {\n# csrc/cuda_view.cu\n  TORCH_CHECK(cpu_tensor.device().is_cpu(), \"Input tensor must be on CPU\");\n# csrc/cuda_view.cu\n",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 15354,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/15354",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_model_config_024",
+    "root_cause": "model_config",
+    "correct_fix": "update_model_config",
+    "incident_ticket": "INCIDENT: Pooling adapters for Transformers backend | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Gemma.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Gemma",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "- AutoWeightsLoader(model).load_weights(weights)\n    + type(model).__mro__[1].load_weights(model, weights)",
+    "initial_snippet": "# vllm/config/model.py\n        convert = None\n            _, (runner, convert) = defaults\n        # Overwrite with user-specified values\n        if self.convert not in {\"auto\", \"none\"}:\n            convert = self.convert\n        # Fall back to default values if still not set\n        if runner is None:\n            runner = \"generate\"\n        if convert in {None, \"none\"}:\n            convert = \"embed\"\n        # Resolve Transformers backend task\n        if runner == \"pooling\":\n            if convert == \"embed\":\n                return cls + \"EmbeddingModel\"",
+    "specialist_opinions": {
+      "loader": {
+        "opinion": "Config values don't align with the actual checkpoint structure. The config needs updating.",
+        "confidence": 0.88,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "Shape mismatch during model loading \u2014 the config specifies different dimensions than the checkpoint contains.",
+        "confidence": 0.89,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "The model configuration doesn't match the checkpoint. There's a mismatch in model parameters.",
+        "confidence": 0.76,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "Weight conversion completed without errors.",
+        "confidence": 0.85,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/config/model.py\n        task = None\n# vllm/config/model.py\n            _, (runner, task) = defaults\n# vllm/config/model.py\n        # User specified value take precedence\n# vllm/config/model.py\n        # Only consider Transformers backend pooling classes if we're wrapping an\n# vllm/config/model.py\n        # architecture that defaults to pooling. Otherwise, we return the LM class\n# vllm/config/model.py\n        # and use adapters.\n# vllm/config/model.py\n        if runner == \"pooling\" and task in {\"embed\", \"classify\"}:\n# vllm/config/model.py\n            if task == \"embed\":\n# vllm/config/model.py\n                cls += \"EmbeddingModel\"\n# vllm/config/model.py\n            elif task == \"classify\":",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 27338,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/27338",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_quantization_error_025",
+    "root_cause": "quantization_error",
+    "correct_fix": "fix_quantization",
+    "incident_ticket": "INCIDENT: [MTP][GLM][Bugfix] Fixed .weight_scale loading logic that dropped MTP prediction accuracy with fp8+mtp | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Deepseek.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Deepseek",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "Error details not extracted from issue",
+    "initial_snippet": "# vllm/model_executor/models/glm4_moe_mtp.py\n            # Some checkpoints include weight scale tensors for the LM head even\n            # when the quantized head isn't built. Skip them if the model does\n            # not expose a matching parameter to avoid KeyError during load.\n            if name.endswith(\".weight_scale\") and name not in params_dict:\n                continue",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "The quantization format is incompatible with this backend or hardware. Precision handling is broken.",
+        "confidence": 0.87,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "Quantized weights are being loaded with the wrong scale factors or format assumptions.",
+        "confidence": 0.8,
+        "is_correct": true
+      },
+      "runtime": {
+        "opinion": "Memory usage is within bounds. Not an OOM issue.",
+        "confidence": 0.65,
+        "is_correct": false
+      },
+      "dispatch": {
+        "opinion": "Runtime libraries loaded without issues.",
+        "confidence": 0.87,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/model_executor/models/glm4_moe_mtp.py\n                    # Some checkpoints include weight scale tensors for the\n# vllm/model_executor/models/glm4_moe_mtp.py\n                    # LM head even when the quantized head isn't built. Skip\n# vllm/model_executor/models/glm4_moe_mtp.py\n                    # them if the model does not expose a matching parameter\n# vllm/model_executor/models/glm4_moe_mtp.py\n                    # to avoid KeyError during load.\n# vllm/model_executor/models/glm4_moe_mtp.py\n                    if name.endswith(\".weight_scale\") and name not in params_dict:\n# vllm/model_executor/models/glm4_moe_mtp.py\n                        continue",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 32101,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/32101",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_quantization_error_026",
+    "root_cause": "quantization_error",
+    "correct_fix": "fix_quantization",
+    "incident_ticket": "INCIDENT: Flashinfer related tests | Hardware: NVIDIA B200 | Backend: vLLM 0.8.x. Model: Moe.",
+    "hardware": "NVIDIA B200",
+    "model_name": "Moe",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "CUDA Error: CUDA_ERROR_INVALID_VALUE /home/ubuntu/vllm/.venv/lib/python3.12/site-packages/flashinfer/data/include/flashinfer/trtllm/fmha/fmhaKernels.cuh 301",
+    "initial_snippet": "# tests/kernels/moe/test_moe.py\n    current_platform.seed_everything(7)\n# tests/kernels/quantization/test_flashinfer_nvfp4_scaled_mm.py\n@pytest.mark.parametrize(\"backend\", [\"cutlass\", \"trtllm\"])\n# tests/kernels/quantization/test_fp8_quant.py\n    current_platform.seed_everything(seed)\n    current_platform.seed_everything(seed)\n# vllm/model_executor/layers/quantization/utils/nvfp4_utils.py\n    elif (\n        backend == NvFp4LinearBackend.VLLM_CUTLASS\n        or backend == NvFp4LinearBackend.FLASHINFER_CUTLASS\n# vllm/utils/flashinfer.py\n    if backend == \"cutlass\":",
+    "specialist_opinions": {
+      "dispatch": {
+        "opinion": "Quantized weights are being loaded with the wrong scale factors or format assumptions.",
+        "confidence": 0.79,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "The quantization format is incompatible with this backend or hardware. Precision handling is broken.",
+        "confidence": 0.94,
+        "is_correct": true
+      },
+      "kernel": {
+        "opinion": "The model config is valid for quantized inference.",
+        "confidence": 0.67,
+        "is_correct": false
+      },
+      "runtime": {
+        "opinion": "The model config is valid for quantized inference.",
+        "confidence": 0.87,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# tests/kernels/moe/test_moe.py\n    set_random_seed(7)\n# tests/kernels/quantization/test_flashinfer_nvfp4_scaled_mm.py\n@pytest.mark.parametrize(\"backend\", [\"cutlass\", \"cudnn\", \"trtllm\"])\n# tests/kernels/quantization/test_fp8_quant.py\n    set_random_seed(seed)\n# tests/kernels/quantization/test_fp8_quant.py\n    set_random_seed(seed)\n# vllm/model_executor/layers/quantization/utils/nvfp4_utils.py\n    elif backend in (\n# vllm/model_executor/layers/quantization/utils/nvfp4_utils.py\n        NvFp4LinearBackend.VLLM_CUTLASS,\n# vllm/model_executor/layers/quantization/utils/nvfp4_utils.py\n        NvFp4LinearBackend.FLASHINFER_CUTLASS,\n# vllm/model_executor/layers/quantization/utils/nvfp4_utils.py\n        NvFp4LinearBackend.FLASHINFER_CUDNN,\n# vllm/utils/flashinfer.py\n    if backend in (\"cutlass\", \"cudnn\"):",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 33462,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/33462",
+    "source_issues": []
+  },
+  {
+    "id": "scraped_arch_guard_027",
+    "root_cause": "arch_guard",
+    "correct_fix": "relax_arch_check",
+    "incident_ticket": "INCIDENT: [ROCm] Improve error handling while loading quantized model on gfx120\u2026 | Hardware: NVIDIA A100 | Backend: vLLM 0.8.x. Model: Mpt.",
+    "hardware": "NVIDIA A100",
+    "model_name": "Mpt",
+    "backend": "vLLM 0.8.x",
+    "initial_log": "(APIServer pid=1)     raise RuntimeError(f\"Get GPU arch from rocminfo failed {str(e)}\")\n(APIServer pid=1) RuntimeError: Get GPU arch from rocminfo failed \"Unknown GPU architecture: gfx1201. Supported architectures: ['native', 'gfx90a', 'gfx908', 'gfx940', 'gfx941', 'gfx942', 'gfx945', 'gfx1100', 'gfx950', 'gfx1101', 'gfx1102', 'gfx1103', 'gfx1150', 'gfx1151', 'gfx1152', 'gfx1153']\"",
+    "initial_snippet": "# vllm/model_executor/layers/quantization/quark/schemes/quark_ocp_mx.py\nexcept (ImportError, AttributeError):",
+    "specialist_opinions": {
+      "kernel": {
+        "opinion": "The architecture check is blocking kernel dispatch. The GPU architecture is not in the supported set despite being compatible at the instruction level.",
+        "confidence": 0.81,
+        "is_correct": true
+      },
+      "loader": {
+        "opinion": "This is a capability check issue. The GPU supports the needed instructions but fails the hardcoded arch whitelist.",
+        "confidence": 0.83,
+        "is_correct": true
+      },
+      "dispatch": {
+        "opinion": "CUDA runtime loaded successfully. No runtime issues detected.",
+        "confidence": 0.74,
+        "is_correct": false
+      },
+      "runtime": {
+        "opinion": "Possible kernel incompatibility \u2014 this GPU may lack required instructions.",
+        "confidence": 0.67,
+        "is_correct": false
+      }
+    },
+    "correct_patch": "# vllm/model_executor/layers/quantization/quark/schemes/quark_ocp_mx.py\nexcept (ImportError, AttributeError, RuntimeError):\n# vllm/model_executor/layers/quantization/quark/schemes/quark_ocp_mx.py\n    logger.warning(\n# vllm/model_executor/layers/quantization/quark/schemes/quark_ocp_mx.py\n        \"AITER is not found or QuarkOCP_MX is not supported on the current \"\n# vllm/model_executor/layers/quantization/quark/schemes/quark_ocp_mx.py\n        \"platform. QuarkOCP_MX quantization will not be available.\"\n# vllm/model_executor/layers/quantization/quark/schemes/quark_ocp_mx.py\n    )",
+    "source_repo": "vllm-project/vllm",
+    "source_pr": 31715,
+    "source_pr_url": "https://github.com/vllm-project/vllm/pull/31715",
+    "source_issues": []
+  }
+]

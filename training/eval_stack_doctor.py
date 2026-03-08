@@ -14,6 +14,8 @@ import json
 import os
 import sys
 
+import weave
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_DIR)
@@ -28,6 +30,7 @@ from training.train_stack_doctor import (
 )
 
 
+@weave.op()
 def evaluate_model(model, tokenizer, scenarios, label="Model"):
     """Run model against scenarios and compute metrics."""
     from unsloth import FastLanguageModel
@@ -103,6 +106,9 @@ def evaluate_model(model, tokenizer, scenarios, label="Model"):
 
     print(f"\n{'='*50}")
     print(f"{label} Results ({n} episodes):")
+    if n == 0:
+        print("  No episodes evaluated!")
+        return {"rc_accuracy": 0, "fix_accuracy": 0, "justification_rate": 0, "avg_steps": 0, "avg_reward": 0}
     print(f"  Root-cause accuracy:  {total_rc_correct/n:.1%}")
     print(f"  Fix accuracy:         {total_fix_correct/n:.1%}")
     print(f"  Justification rate:   {total_justified/n:.1%}")
@@ -123,16 +129,19 @@ def main():
     from unsloth import FastLanguageModel
     import argparse
 
+    weave.init("stack-doctor/evaluation")
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="unsloth/Qwen3-1.7B", help="Model name or path")
+    parser.add_argument("--model", default="unsloth/Qwen3.5-9B", help="Model name or path")
     parser.add_argument("--lora", default=None, help="Path to LoRA adapter")
     args = parser.parse_args()
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model,
         load_in_4bit=True,
-        max_seq_length=2048,
+        max_seq_length=8192,
     )
+    # Keep thinking enabled — extract_actions strips <think> blocks
 
     if args.lora:
         from peft import PeftModel

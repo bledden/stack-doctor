@@ -8,6 +8,8 @@ hardware/model/backend context, log and code snippets, and specialist opinions
 
 from __future__ import annotations
 
+import json
+import os
 import random
 from dataclasses import dataclass, field
 
@@ -19,6 +21,10 @@ ROOT_CAUSES = [
     "backend_selector",
     "model_config",
     "weight_layout",
+    "memory_oom",
+    "quantization_error",
+    "distributed_comm",
+    "driver_compat",
 ]
 
 FIXES = [
@@ -28,6 +34,10 @@ FIXES = [
     "switch_backend",
     "update_model_config",
     "fix_weight_mapping",
+    "tune_memory_config",
+    "fix_quantization",
+    "fix_comm_config",
+    "update_driver_config",
 ]
 
 # 1:1 mapping
@@ -1872,14 +1882,2050 @@ def _make_scenarios() -> list[Scenario]:
         },
     ))
 
+    # --- memory_oom scenarios ---
+    scenarios.append(Scenario(
+        id="memory_oom_01",
+        root_cause="memory_oom",
+        correct_fix="tune_memory_config",
+        incident_ticket=(
+            "INCIDENT: vLLM OOM crash serving DeepSeek-V3-671B on 8xH100. "
+            "Model loads successfully but crashes after ~50 concurrent requests. "
+            "GPU memory fragmentation suspected. KV cache allocation fails."
+        ),
+        hardware="NVIDIA H100",
+        model_name="DeepSeek-V3-671B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Model loaded: 671B params across 8 GPUs (tensor parallel=8)\n"
+            "[vLLM] KV cache: allocated 45GB per GPU (gpu_memory_utilization=0.95)\n"
+            "[vLLM] Serving... 48 concurrent requests OK\n"
+            "[vLLM] Request 51: torch.cuda.OutOfMemoryError: CUDA out of memory. "
+            "Tried to allocate 2.1 GiB. GPU 3 has 0.8 GiB free."
+        ),
+        initial_snippet=(
+            "# vllm serve config\n"
+            "gpu_memory_utilization: 0.95\n"
+            "max_num_seqs: 256\n"
+            "max_model_len: 32768\n"
+            "# No swap space configured\n"
+            "# No memory headroom for activation spikes\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime is healthy. OOM is a memory planning issue, not runtime.", 0.80, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "Backend dispatch is fine. This is a memory capacity issue.", 0.65, False
+            ),
+            "kernel": SpecialistOpinion(
+                "MoE expert activation creates memory spikes. With 256 experts and "
+                "dynamic routing, peak memory is unpredictable. Need to lower "
+                "gpu_memory_utilization to leave headroom.", 0.91, True
+            ),
+            "loader": SpecialistOpinion(
+                "gpu_memory_utilization=0.95 leaves no headroom. With MoE models, "
+                "activation memory varies per-request depending on expert routing. "
+                "Reduce to 0.85 and set max_num_seqs to 128.", 0.93, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[vLLM] Per-GPU memory: 80GB total, 76GB allocated (95%)\n"
+                "[vLLM] Model weights: 28GB per GPU\n"
+                "[vLLM] KV cache: 45GB per GPU\n"
+                "[vLLM] Remaining: 3GB (insufficient for MoE activation spikes)\n"
+                "[vLLM] Peak activation for DeepSeek MoE: ~5GB per GPU"
+            ),
+            config=(
+                "gpu_memory_utilization: 0.95\n"
+                "max_num_seqs: 256\n"
+                "max_model_len: 32768\n"
+                "swap_space_gb: 0\n"
+                "tensor_parallel_size: 8\n"
+                "model_weights_per_gpu_gb: 28\n"
+                "kv_cache_per_gpu_gb: 45"
+            ),
+            snippet=(
+                "# Memory budget too tight for MoE model\n"
+                "# Model weights: 28GB + KV cache: 45GB = 73GB\n"
+                "# Remaining: 3GB for activations\n"
+                "# MoE expert routing can spike to 5GB+ activation\n"
+                "# Fix: gpu_memory_utilization=0.85, max_num_seqs=128"
+            ),
+            metrics=(
+                "oom_crashes: 14 in 1 hour\n"
+                "avg_concurrent_at_crash: 52\n"
+                "peak_activation_gb: 5.2\n"
+                "available_at_crash_gb: 0.8\n"
+                "gpu_memory_utilization: 0.95"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "CUDA runtime is fine. The OOM is caused by overcommitted memory planning.",
+            "dispatch": "Backend is dispatching correctly. Memory budget is the issue.",
+            "kernel": "MoE activation spikes are the trigger. Reduce gpu_memory_utilization to 0.85.",
+            "loader": "Lower gpu_memory_utilization to 0.85 and cap max_num_seqs at 128 for MoE headroom.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="memory_oom_02",
+        root_cause="memory_oom",
+        correct_fix="tune_memory_config",
+        incident_ticket=(
+            "INCIDENT: SGLang server on B200 crashes with OOM during long-context requests. "
+            "Short prompts (<4K tokens) work fine. Any request over 16K tokens causes crash. "
+            "Serving Llama-4-Maverick with 128 experts."
+        ),
+        hardware="NVIDIA B200",
+        model_name="Llama-4-Maverick-17Bx128E",
+        backend="SGLang 0.5.x",
+        initial_log=(
+            "[SGLang] Model loaded: Llama-4-Maverick-17Bx128E\n"
+            "[SGLang] KV cache pre-allocated for max_total_tokens=65536\n"
+            "[SGLang] Request (len=18432): allocating KV blocks...\n"
+            "[SGLang] FATAL: torch.cuda.OutOfMemoryError during KV cache expansion\n"
+            "[SGLang] GPU memory: 189GB used / 192GB total"
+        ),
+        initial_snippet=(
+            "# sglang_config.yaml\n"
+            "max_total_tokens: 65536\n"
+            "chunked_prefill_size: 8192\n"
+            "mem_fraction_static: 0.90\n"
+            "# KV cache over-allocated for 128-expert MoE model\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime healthy. Memory fragmentation from large contiguous allocations.", 0.72, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "Chunked prefill is working but chunk size may be too large for this context length.", 0.55, False
+            ),
+            "kernel": SpecialistOpinion(
+                "KV cache expansion tries to allocate contiguous memory. "
+                "With 128 experts, the KV cache per-token is much larger than dense models. "
+                "max_total_tokens needs to be reduced for MoE.", 0.90, True
+            ),
+            "loader": SpecialistOpinion(
+                "mem_fraction_static=0.90 is too high for MoE. With 128 experts, "
+                "the shared expert and routing tensors need dynamic memory. "
+                "Lower to 0.80 and reduce max_total_tokens to 32768.", 0.94, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[SGLang] Per-token KV size: 2.4MB (128 experts x shared KV)\n"
+                "[SGLang] 65536 tokens * 2.4MB = 157GB KV cache requested\n"
+                "[SGLang] Model weights: 35GB\n"
+                "[SGLang] Total needed: 192GB (exceeds 192GB GPU memory)\n"
+                "[SGLang] OOM at KV block allocation for long sequences"
+            ),
+            config=(
+                "max_total_tokens: 65536\n"
+                "mem_fraction_static: 0.90\n"
+                "kv_per_token_mb: 2.4\n"
+                "model_weights_gb: 35\n"
+                "gpu_memory_gb: 192"
+            ),
+            snippet=(
+                "# MoE KV cache is much larger than dense model estimate\n"
+                "# Dense model: ~0.5MB per token KV\n"
+                "# 128-expert MoE: ~2.4MB per token KV (shared + expert KV)\n"
+                "# Fix: max_total_tokens=32768, mem_fraction_static=0.80"
+            ),
+            metrics=(
+                "oom_count: 23\n"
+                "avg_sequence_len_at_oom: 17500\n"
+                "max_successful_len: 15200\n"
+                "kv_cache_gb_at_crash: 157\n"
+                "available_gb: 192"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Not a runtime issue. Memory planning doesn't account for MoE KV overhead.",
+            "dispatch": "Chunked prefill helps but doesn't solve the KV cache over-allocation.",
+            "kernel": "KV cache per-token is 4.8x larger than estimated. Reduce max_total_tokens.",
+            "loader": "Set max_total_tokens=32768 and mem_fraction_static=0.80 for MoE headroom.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="memory_oom_03",
+        root_cause="memory_oom",
+        correct_fix="tune_memory_config",
+        incident_ticket=(
+            "INCIDENT: TensorRT-LLM engine build OOM on RTX 5090 for Qwen3-235B. "
+            "Engine build phase exhausts 32GB VRAM during weight conversion. "
+            "Same model builds fine on 80GB A100."
+        ),
+        hardware="NVIDIA SM120 (GeForce RTX 5090)",
+        model_name="Qwen3-235B-A22B",
+        backend="TensorRT-LLM 0.18",
+        initial_log=(
+            "[TensorRT-LLM] Building engine for Qwen3-235B-A22B...\n"
+            "[TensorRT-LLM] Weight conversion phase: loading FP16 weights into GPU memory\n"
+            "[TensorRT-LLM] ERROR: torch.cuda.OutOfMemoryError during weight quantization\n"
+            "[TensorRT-LLM] Attempted to allocate 28GB for layer conversion buffer\n"
+            "[TensorRT-LLM] GPU memory: 31.5GB used / 32GB total"
+        ),
+        initial_snippet=(
+            "# trtllm_build_config.py\n"
+            "build_config = {\n"
+            "    'max_batch_size': 64,\n"
+            "    'max_input_len': 8192,\n"
+            "    'weight_streaming': False,  # loads all weights to GPU\n"
+            "    'use_paged_context_fmha': True,\n"
+            "}\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA 13 runtime is fine. GPU memory is just 32GB — too small for full model load.", 0.82, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "TensorRT-LLM engine build shouldn't need all weights on GPU at once. "
+                "Enable weight_streaming to convert layer-by-layer.", 0.91, True
+            ),
+            "kernel": SpecialistOpinion(
+                "Maybe try a different quantization algorithm that uses less memory.", 0.45, False
+            ),
+            "loader": SpecialistOpinion(
+                "The model is too large for this GPU. Need a bigger GPU.", 0.40, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[TensorRT-LLM] Total FP16 weight size: 470GB\n"
+                "[TensorRT-LLM] Per-layer max weight: 3.2GB\n"
+                "[TensorRT-LLM] Conversion buffer: 28GB (loading 9 layers at once)\n"
+                "[TensorRT-LLM] weight_streaming: disabled -> all layers loaded to GPU\n"
+                "[TensorRT-LLM] GPU VRAM: 32GB"
+            ),
+            config=(
+                "weight_streaming: false\n"
+                "layers_loaded_simultaneously: 9\n"
+                "per_layer_weight_gb: 3.2\n"
+                "conversion_buffer_gb: 28\n"
+                "gpu_vram_gb: 32"
+            ),
+            snippet=(
+                "# weight_streaming=False loads multiple layers to GPU simultaneously\n"
+                "# 9 layers * 3.2GB = 28GB conversion buffer\n"
+                "# + engine workspace + CUDA context = >32GB\n"
+                "# Fix: enable weight_streaming for layer-by-layer conversion"
+            ),
+            metrics=(
+                "build_oom_count: 1\n"
+                "conversion_buffer_gb: 28\n"
+                "gpu_vram_gb: 32\n"
+                "layers_loaded: 9\n"
+                "max_layers_for_32gb: 3"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "32GB VRAM is sufficient if weight streaming is enabled for layer-by-layer conversion.",
+            "dispatch": "Enable weight_streaming=True so the builder converts one layer at a time instead of loading 9.",
+            "kernel": "Quantization algorithm is fine. The issue is the build-time memory strategy.",
+            "loader": "The model can serve on 32GB with streaming. It's the build phase that's misconfigured.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="memory_oom_04",
+        root_cause="memory_oom",
+        correct_fix="tune_memory_config",
+        incident_ticket=(
+            "INCIDENT: MI355X serving Llama-3.3-70B runs out of memory when beam search "
+            "is enabled (num_beams=8). Greedy decoding works fine. "
+            "OOM occurs during the first beam expansion step."
+        ),
+        hardware="AMD MI355X",
+        model_name="Llama-3.3-70B-Instruct",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Serving Llama-3.3-70B-Instruct on MI355X\n"
+            "[vLLM] Greedy decoding: OK (memory stable at 88%)\n"
+            "[vLLM] Beam search (num_beams=8): allocating beam KV caches...\n"
+            "[vLLM] ERROR: OOM during beam expansion. Each beam duplicates KV cache.\n"
+            "[vLLM] Attempted: 8 * 14GB = 112GB KV for single request"
+        ),
+        initial_snippet=(
+            "# vllm serve params\n"
+            "--gpu-memory-utilization 0.92\n"
+            "--max-num-seqs 64\n"
+            "--max-model-len 16384\n"
+            "# Beam search multiplies KV cache by num_beams\n"
+            "# No per-request memory limit configured\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "ROCm runtime healthy. OOM is a memory allocation issue.", 0.75, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "Beam search KV duplication is the root cause. With 8 beams, each beam "
+                "needs its own KV cache copy. Need to limit beam count or reserve memory.", 0.92, True
+            ),
+            "kernel": SpecialistOpinion(
+                "The beam search kernel should share KV prefix across beams using copy-on-write. "
+                "But vLLM's beam search implementation does full copies. This is a known issue.", 0.88, True
+            ),
+            "loader": SpecialistOpinion(
+                "Maybe the model weights are in the wrong dtype causing extra memory.", 0.40, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[vLLM] Greedy: 1 KV cache per request = 14GB\n"
+                "[vLLM] Beam search: 8 KV caches per request = 112GB\n"
+                "[vLLM] GPU memory: 128GB (MI355X)\n"
+                "[vLLM] Model weights: 35GB\n"
+                "[vLLM] Available for KV: 83GB (insufficient for 112GB beam KV)"
+            ),
+            config=(
+                "gpu_memory_utilization: 0.92\n"
+                "max_num_seqs: 64\n"
+                "num_beams: 8\n"
+                "kv_per_request_gb: 14\n"
+                "gpu_total_gb: 128"
+            ),
+            snippet=(
+                "# Beam search duplicates full KV cache per beam\n"
+                "# 8 beams * 14GB = 112GB for single request\n"
+                "# Available after model weights: 83GB\n"
+                "# Fix: reduce num_beams to 4, lower max_model_len, or use\n"
+                "# gpu_memory_utilization=0.85 with max_num_seqs=8 for beam mode"
+            ),
+            metrics=(
+                "oom_on_beam_search: true\n"
+                "kv_per_beam_gb: 14\n"
+                "total_beam_kv_gb: 112\n"
+                "available_gb: 83\n"
+                "greedy_oom: false"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "ROCm runtime is fine. Memory budget doesn't account for beam duplication.",
+            "dispatch": "Limit beams to 4 and reduce max_model_len to 8192 for beam search mode.",
+            "kernel": "vLLM beam search copies full KV per beam. Use fewer beams or enable prefix sharing.",
+            "loader": "Model weights are correct dtype. The issue is beam search KV duplication.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="memory_oom_05",
+        root_cause="memory_oom",
+        correct_fix="tune_memory_config",
+        incident_ticket=(
+            "INCIDENT: Triton Inference Server on DGX Spark OOMs when loading second model. "
+            "First model (DeepSeek-R1-Distill-70B) loads fine. Loading Mistral-Large-2 "
+            "concurrently causes OOM. Both models fit individually but not together."
+        ),
+        hardware="NVIDIA SM121 (DGX Spark)",
+        model_name="DeepSeek-R1-Distill-70B",
+        backend="Triton Inference Server",
+        initial_log=(
+            "[Triton] Model 1 (DeepSeek-R1-Distill-70B): loaded, 65GB VRAM\n"
+            "[Triton] Model 2 (Mistral-Large-2): loading...\n"
+            "[Triton] ERROR: CUDA OOM allocating 48GB for model 2\n"
+            "[Triton] GPU memory: 91GB used / 96GB total\n"
+            "[Triton] Model instance groups both set to GPU 0"
+        ),
+        initial_snippet=(
+            "# model_repository/config.pbtxt (both models)\n"
+            "instance_group [\n"
+            "  { count: 1, kind: KIND_GPU, gpus: [0] }\n"
+            "]\n"
+            "# Both models pinned to GPU 0 (96GB)\n"
+            "# No model loading policy configured\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime fine. Both models are pinned to GPU 0 instead of being spread "
+                "across available GPUs.", 0.87, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Triton model placement is wrong. Both models on GPU 0 but 96GB isn't enough "
+                "for both. Need to set model_loading_policy or spread across GPUs.", 0.92, True
+            ),
+            "kernel": SpecialistOpinion(
+                "Maybe one of the models has a memory leak in its kernels.", 0.35, False
+            ),
+            "loader": SpecialistOpinion(
+                "Both models are loaded eagerly at startup. Try lazy loading with "
+                "model_loading_policy=on_demand.", 0.60, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[Triton] GPU 0: 65GB (model 1) + 5GB (CUDA ctx) = 70GB used\n"
+                "[Triton] GPU 0: 96GB total, 26GB free\n"
+                "[Triton] Model 2 needs 48GB — doesn't fit on GPU 0\n"
+                "[Triton] GPU 1: 96GB free (unused!)\n"
+                "[Triton] Both models pinned to gpus: [0]"
+            ),
+            config=(
+                "model_1_gpu: [0]\n"
+                "model_2_gpu: [0]\n"
+                "available_gpus: [0, 1, 2, 3]\n"
+                "model_1_vram_gb: 65\n"
+                "model_2_vram_gb: 48\n"
+                "gpu_0_total_gb: 96"
+            ),
+            snippet=(
+                "# Both models pinned to GPU 0 via instance_group config\n"
+                "# GPU 0: 96GB (insufficient for 65+48=113GB)\n"
+                "# GPUs 1-3: completely idle\n"
+                "# Fix: assign model 2 to GPU 1, or use auto-placement"
+            ),
+            metrics=(
+                "gpu_0_used_gb: 70\n"
+                "gpu_0_free_gb: 26\n"
+                "gpu_1_used_gb: 0\n"
+                "model_2_needed_gb: 48\n"
+                "total_gpus: 4"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "GPU 1-3 are idle. Assign model 2 to GPU 1 in instance_group config.",
+            "dispatch": "Fix the instance_group config to spread models across GPUs. Or use auto-placement.",
+            "kernel": "No memory leak. Both models just don't fit on one 96GB GPU.",
+            "loader": "Lazy loading doesn't help — both models are needed concurrently. Spread across GPUs.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="memory_oom_06",
+        root_cause="memory_oom",
+        correct_fix="tune_memory_config",
+        incident_ticket=(
+            "INCIDENT: vLLM on MI300X crashes with OOM when prefix caching is enabled. "
+            "Without prefix caching, Qwen3-235B serves fine. With prefix caching, "
+            "memory grows unbounded until OOM after ~200 requests."
+        ),
+        hardware="AMD MI300X",
+        model_name="Qwen3-235B-A22B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Prefix caching: enabled\n"
+            "[vLLM] Initial GPU memory usage: 142GB / 192GB\n"
+            "[vLLM] After 50 requests: 165GB / 192GB (prefix cache growing)\n"
+            "[vLLM] After 150 requests: 188GB / 192GB\n"
+            "[vLLM] Request 203: OOM — prefix cache consumed all free memory"
+        ),
+        initial_snippet=(
+            "# vllm serve\n"
+            "--enable-prefix-caching\n"
+            "--gpu-memory-utilization 0.90\n"
+            "--max-num-seqs 32\n"
+            "# No prefix cache eviction policy\n"
+            "# No max prefix cache size configured\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "ROCm runtime is fine. The prefix cache is never evicted and grows forever.", 0.83, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Try disabling prefix caching entirely. It doesn't work with MoE models.", 0.40, False
+            ),
+            "kernel": SpecialistOpinion(
+                "Prefix cache blocks are never freed. vLLM's evictor isn't respecting the "
+                "memory budget. Need to set max_prefix_cache_tokens or lower gpu_memory_utilization.", 0.92, True
+            ),
+            "loader": SpecialistOpinion(
+                "Model loaded correctly. Memory issue is in the KV cache subsystem.", 0.70, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[vLLM] Prefix cache entries: 847 (never evicted)\n"
+                "[vLLM] Prefix cache size: 46GB\n"
+                "[vLLM] Cache eviction policy: NONE (default)\n"
+                "[vLLM] gpu_memory_utilization=0.90 doesn't cap prefix cache\n"
+                "[vLLM] OOM when active KV + prefix cache > available memory"
+            ),
+            config=(
+                "enable_prefix_caching: true\n"
+                "prefix_cache_eviction: none\n"
+                "max_prefix_cache_tokens: unlimited\n"
+                "gpu_memory_utilization: 0.90\n"
+                "prefix_cache_gb: 46"
+            ),
+            snippet=(
+                "# Prefix cache grows without bound\n"
+                "# gpu_memory_utilization only limits initial KV cache allocation\n"
+                "# Prefix cache is separate and has no eviction\n"
+                "# Fix: set gpu_memory_utilization=0.80 and enable LRU eviction"
+            ),
+            metrics=(
+                "prefix_cache_entries: 847\n"
+                "prefix_cache_gb: 46\n"
+                "time_to_oom_minutes: 22\n"
+                "requests_before_oom: 203\n"
+                "eviction_events: 0"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Prefix cache grows without eviction. Set a size limit or enable LRU eviction.",
+            "dispatch": "Prefix caching works fine with MoE. The issue is unbounded cache growth.",
+            "kernel": "Set gpu_memory_utilization=0.80 and configure prefix cache eviction policy to LRU.",
+            "loader": "Weights loaded fine. Tune the prefix cache memory budget.",
+        },
+    ))
+
+    # --- quantization_error scenarios ---
+    scenarios.append(Scenario(
+        id="quantization_error_01",
+        root_cause="quantization_error",
+        correct_fix="fix_quantization",
+        incident_ticket=(
+            "INCIDENT: GPTQ 4-bit quantized Llama-3.3-70B produces garbled output on H100. "
+            "Perplexity is 450+ (expected <10). The quantization was done with an older "
+            "AutoGPTQ version. Suspected calibration data mismatch."
+        ),
+        hardware="NVIDIA H100",
+        model_name="Llama-3.3-70B-Instruct",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Loading GPTQ model: 4-bit, group_size=128\n"
+            "[vLLM] Quantization config: bits=4, sym=True, desc_act=True\n"
+            "[vLLM] WARNING: qweight shape unexpected for layer 0: [4096, 1024]\n"
+            "[vLLM] Output sample: 'the the the the the the...'\n"
+            "[vLLM] Perplexity check: 458.7 (FAIL, threshold: 15)"
+        ),
+        initial_snippet=(
+            "# quantize.py (AutoGPTQ v0.4)\n"
+            "quantize_config = BaseQuantizeConfig(\n"
+            "    bits=4, group_size=128, desc_act=True,\n"
+            "    sym=True, true_sequential=True\n"
+            ")\n"
+            "# Calibration dataset: 128 samples of random tokens\n"
+            "# Should use representative text from target domain\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime is fine. Model loads and runs. Output quality is the issue.", 0.78, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "GPTQ dequantization kernel dispatched correctly for H100.", 0.65, False
+            ),
+            "kernel": SpecialistOpinion(
+                "The dequantization kernel is correct. qweight tensor packing format changed "
+                "between AutoGPTQ v0.4 and v0.7. Old format is being read with new unpacker.", 0.93, True
+            ),
+            "loader": SpecialistOpinion(
+                "GPTQ checkpoint was quantized with AutoGPTQ v0.4 which uses a different "
+                "packing order (column-major) than vLLM expects (row-major). "
+                "Re-quantize with compatible version or convert packing format.", 0.91, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[GPTQ] qweight packing: column-major (AutoGPTQ v0.4)\n"
+                "[GPTQ] Expected packing: row-major (vLLM/AutoGPTQ v0.7+)\n"
+                "[GPTQ] Bit unpacking yields wrong int4 values\n"
+                "[GPTQ] Layer 0 dequantized weights: mean=47.3, std=812 (expected mean~0, std~0.02)"
+            ),
+            config=(
+                "autogptq_version: 0.4.2\n"
+                "vllm_expected_version: 0.7+\n"
+                "packing_format: column_major\n"
+                "expected_packing: row_major\n"
+                "bits: 4\n"
+                "group_size: 128"
+            ),
+            snippet=(
+                "# AutoGPTQ v0.4: packs 8 int4 values column-major into int32\n"
+                "# AutoGPTQ v0.7+: packs row-major (matches Marlin/Exllama kernels)\n"
+                "# vLLM's Marlin kernel expects row-major packing\n"
+                "# Fix: re-quantize with AutoGPTQ>=0.7 or use repack script"
+            ),
+            metrics=(
+                "perplexity: 458.7\n"
+                "expected_perplexity: 8.2\n"
+                "dequant_mean_error: 47.3\n"
+                "dequant_std_error: 812\n"
+                "affected_layers: all"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Runtime is fine. Quantized weights are just unpacked incorrectly.",
+            "dispatch": "Marlin kernel dispatched. But input data is in wrong packing format.",
+            "kernel": "Marlin kernel unpacks row-major. Checkpoint is column-major. Re-quantize or repack.",
+            "loader": "Re-quantize with AutoGPTQ >= 0.7 to get row-major packing compatible with vLLM.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="quantization_error_02",
+        root_cause="quantization_error",
+        correct_fix="fix_quantization",
+        incident_ticket=(
+            "INCIDENT: AWQ 4-bit Mistral-Large-2 on RTX 5090 has quality degradation "
+            "only in the last 20 layers. First 40 layers produce correct activations. "
+            "Full-precision model works perfectly. Suspected quantization calibration issue."
+        ),
+        hardware="NVIDIA SM120 (GeForce RTX 5090)",
+        model_name="Mistral-Large-2",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] AWQ model loaded: 4-bit, group_size=128\n"
+            "[vLLM] Layer 0-39: activations normal (cosine sim > 0.99 vs FP16)\n"
+            "[vLLM] Layer 40+: activations diverging (cosine sim < 0.3 vs FP16)\n"
+            "[vLLM] Output: partially coherent, degrades mid-sentence\n"
+            "[vLLM] Perplexity: 87.3 (expected: 9.1)"
+        ),
+        initial_snippet=(
+            "# awq_calibration.py\n"
+            "calib_data = load_dataset('wikitext', split='train[:128]')\n"
+            "# Calibration only runs 128 samples with max_length=512\n"
+            "# Mistral-Large-2 has 60 layers\n"
+            "# Short calibration doesn't capture activation ranges in deep layers\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA 13 runtime is fine. No errors during inference.", 0.75, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "AWQ backend selected and dispatching correctly.", 0.60, False
+            ),
+            "kernel": SpecialistOpinion(
+                "The AWQ dequantization kernels are mathematically correct. "
+                "The issue is the quantization scales themselves — they were computed from "
+                "insufficient calibration data. Deep layers got poor scale estimates.", 0.90, True
+            ),
+            "loader": SpecialistOpinion(
+                "AWQ calibration used only 128 samples with max_length=512. "
+                "Deep layers (40-59) never saw diverse activation ranges. "
+                "Re-quantize with 512+ samples at max_length=2048.", 0.94, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[AWQ] Calibration stats: 128 samples, max_len=512\n"
+                "[AWQ] Layer 0-39 scale variance: 0.012 (good)\n"
+                "[AWQ] Layer 40-59 scale variance: 0.0001 (flat — under-calibrated)\n"
+                "[AWQ] Deep layer scales almost identical — poor quantization"
+            ),
+            config=(
+                "awq_bits: 4\n"
+                "group_size: 128\n"
+                "calib_samples: 128\n"
+                "calib_max_length: 512\n"
+                "model_layers: 60\n"
+                "under_calibrated_layers: 40-59"
+            ),
+            snippet=(
+                "# AWQ scales for layers 40-59 are nearly flat\n"
+                "# Calibration data too short to activate deep layers meaningfully\n"
+                "# Fix: re-quantize with 512+ samples, max_length=2048\n"
+                "# This ensures all layers see representative activations"
+            ),
+            metrics=(
+                "perplexity: 87.3\n"
+                "expected_perplexity: 9.1\n"
+                "cosine_sim_layer0_39: 0.993\n"
+                "cosine_sim_layer40_59: 0.27\n"
+                "under_calibrated_layers: 20"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "No runtime issue. Quantization quality is the problem.",
+            "dispatch": "AWQ backend is correct. Scale values are the issue.",
+            "kernel": "Dequant kernel is correct. The scales for deep layers are flat. Re-calibrate.",
+            "loader": "Re-quantize with more calibration data (512 samples, max_length=2048) to fix deep layers.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="quantization_error_03",
+        root_cause="quantization_error",
+        correct_fix="fix_quantization",
+        incident_ticket=(
+            "INCIDENT: FP8 quantized DeepSeek-V3-671B on B200 produces NaN in MoE expert "
+            "layers. Dense layers work fine. Suspected FP8 scale overflow in expert weights "
+            "due to outlier channels in MoE FFN."
+        ),
+        hardware="NVIDIA B200",
+        model_name="DeepSeek-V3-671B",
+        backend="TensorRT-LLM 0.18",
+        initial_log=(
+            "[TensorRT-LLM] FP8 inference: DeepSeek-V3-671B\n"
+            "[TensorRT-LLM] Dense layers 0-3: output OK\n"
+            "[TensorRT-LLM] MoE layer 4, expert 37: NaN detected\n"
+            "[TensorRT-LLM] FP8 dequant scale for expert 37: 1847.5 (extreme)\n"
+            "[TensorRT-LLM] Overflow during dequantization: scale * FP8_max > FP16_max"
+        ),
+        initial_snippet=(
+            "# fp8_quantize.py\n"
+            "# Per-tensor FP8 quantization\n"
+            "scale = weight.abs().max() / FP8_E4M3_MAX\n"
+            "# MoE expert FFN layers have outlier channels with |w| > 500\n"
+            "# Per-tensor scale too coarse for these layers\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime fine. NaN propagation from dequantization.", 0.78, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "FP8 backend dispatched correctly. The quantization scheme is the issue.", 0.70, False
+            ),
+            "kernel": SpecialistOpinion(
+                "FP8 GEMM kernel produces NaN because dequant scale overflows FP16 range. "
+                "Expert 37 has outlier weight channels that make per-tensor scaling too coarse. "
+                "Need per-channel FP8 scaling for MoE experts.", 0.94, True
+            ),
+            "loader": SpecialistOpinion(
+                "MoE expert weights have extreme outliers in a few channels. "
+                "Per-tensor FP8 quantization can't handle this — scale is dominated by outliers "
+                "while other channels get crushed to zero. Switch to per-channel quantization.", 0.91, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[FP8] Expert 37 weight stats: max=547.2, mean=0.03, outlier_ratio=0.001\n"
+                "[FP8] Per-tensor scale: 547.2 / 448.0 = 1.22\n"
+                "[FP8] Dequant: 448.0 * 1.22 = 546.6 (close to FP16 overflow with accumulation)\n"
+                "[FP8] Non-outlier channels quantized to 0 (lost information)"
+            ),
+            config=(
+                "fp8_format: e4m3fn\n"
+                "quantization_scheme: per_tensor\n"
+                "expert_37_weight_max: 547.2\n"
+                "fp8_e4m3_max: 448.0\n"
+                "fp16_max: 65504.0"
+            ),
+            snippet=(
+                "# Per-tensor scale for expert 37: max(|w|)=547.2\n"
+                "# FP8 max representable: 448.0\n"
+                "# Scale = 547.2/448 = 1.22\n"
+                "# Dequant of max values: 448*1.22 = 546.6\n"
+                "# Accumulated in FP16 GEMM -> overflow with large sequences\n"
+                "# Fix: use per-channel FP8 scaling for MoE expert layers"
+            ),
+            metrics=(
+                "nan_experts: [37, 91, 203]\n"
+                "total_experts: 256\n"
+                "outlier_ratio: 0.001\n"
+                "per_tensor_scale_max: 1847.5\n"
+                "non_outlier_precision_loss: 95%"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "NaN is from dequant overflow, not runtime issue.",
+            "dispatch": "FP8 dispatch is correct. Quantization granularity needs to change.",
+            "kernel": "Switch to per-channel FP8 scaling for MoE expert FFN layers to handle outliers.",
+            "loader": "Re-quantize MoE experts with per-channel scaling. Dense layers can stay per-tensor.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="quantization_error_04",
+        root_cause="quantization_error",
+        correct_fix="fix_quantization",
+        incident_ticket=(
+            "INCIDENT: SmoothQuant INT8 on H100 for Qwen3-235B has severe accuracy loss. "
+            "Perplexity 130+ vs expected 8.5. SmoothQuant migration factor alpha=0.5 "
+            "was tuned for a different model architecture."
+        ),
+        hardware="NVIDIA H100",
+        model_name="Qwen3-235B-A22B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] SmoothQuant INT8: alpha=0.5\n"
+            "[vLLM] Activation smoothing applied...\n"
+            "[vLLM] WARNING: post-smooth activation range still large: [-127, 127] maps to [-847, 923]\n"
+            "[vLLM] INT8 GEMM output quality: FAIL\n"
+            "[vLLM] Perplexity: 134.2 (expected: 8.5)"
+        ),
+        initial_snippet=(
+            "# smooth_quant_config.yaml\n"
+            "quantization: smoothquant\n"
+            "smoothquant_alpha: 0.5\n"
+            "# alpha=0.5 was tuned for Llama-2-70B\n"
+            "# Qwen3 MoE has different activation distribution\n"
+            "# Needs per-layer alpha tuning for MoE gating layers\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "Runtime is fine. INT8 GEMM kernels launch correctly.", 0.75, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "INT8 backend dispatched. But the quantization configuration is wrong for this model.", 0.68, True
+            ),
+            "kernel": SpecialistOpinion(
+                "The INT8 GEMM kernel is correct. SmoothQuant alpha=0.5 doesn't properly balance "
+                "the activation/weight difficulty for Qwen3's MoE architecture. "
+                "MoE gating layers need alpha=0.75+.", 0.93, True
+            ),
+            "loader": SpecialistOpinion(
+                "Weights loaded fine. Try increasing batch size to improve throughput.", 0.35, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[SmoothQuant] alpha=0.5 (global)\n"
+                "[SmoothQuant] Dense layer activation range after smooth: [-23, 31] (OK)\n"
+                "[SmoothQuant] MoE gating layer activation range after smooth: [-847, 923] (BAD)\n"
+                "[SmoothQuant] MoE gating layers need higher alpha to push more to weights"
+            ),
+            config=(
+                "smoothquant_alpha: 0.5\n"
+                "optimal_alpha_dense: 0.5\n"
+                "optimal_alpha_moe_gate: 0.80\n"
+                "optimal_alpha_moe_ffn: 0.70\n"
+                "per_layer_alpha: false"
+            ),
+            snippet=(
+                "# SmoothQuant: X_smooth = X / diag(s^alpha), W_smooth = W * diag(s^alpha)\n"
+                "# alpha=0.5 works for dense Llama but not for Qwen3 MoE\n"
+                "# MoE gating/FFN layers have spikier activations needing alpha=0.7-0.8\n"
+                "# Fix: enable per-layer alpha tuning or use alpha=0.75 globally"
+            ),
+            metrics=(
+                "perplexity: 134.2\n"
+                "expected_perplexity: 8.5\n"
+                "dense_layer_accuracy: 97%\n"
+                "moe_layer_accuracy: 34%\n"
+                "activation_clipping_rate: 42%"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "No runtime issue. Quantization accuracy is the problem.",
+            "dispatch": "INT8 dispatch is fine. The quantization parameters need adjustment.",
+            "kernel": "Re-run SmoothQuant calibration with per-layer alpha or alpha=0.75 for Qwen3 MoE.",
+            "loader": "Batch size is irrelevant. The issue is SmoothQuant alpha mismatch.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="quantization_error_05",
+        root_cause="quantization_error",
+        correct_fix="fix_quantization",
+        incident_ticket=(
+            "INCIDENT: GGUF Q4_K_M quantized DeepSeek-R1-Distill-70B fails to load in "
+            "SGLang on MI355X. Error: 'unsupported quant type Q4_K_M for ROCm'. "
+            "Same GGUF file works on NVIDIA hardware."
+        ),
+        hardware="AMD MI355X",
+        model_name="DeepSeek-R1-Distill-70B",
+        backend="SGLang 0.5.x",
+        initial_log=(
+            "[SGLang] Loading GGUF: DeepSeek-R1-Distill-70B-Q4_K_M.gguf\n"
+            "[SGLang] Detected quant type: Q4_K_M (k-quant mixed)\n"
+            "[SGLang] ROCm backend: checking dequant kernel support...\n"
+            "[SGLang] ERROR: Q4_K_M dequantization kernel not available for ROCm/HIP\n"
+            "[SGLang] Supported ROCm quant types: Q4_0, Q8_0, FP16"
+        ),
+        initial_snippet=(
+            "# sglang/quantization/gguf_loader.py\n"
+            "ROCM_SUPPORTED_QUANTS = {'Q4_0', 'Q8_0', 'FP16'}\n"
+            "# K-quant types (Q4_K_M, Q5_K_M, etc.) have CUDA kernels only\n"
+            "# ROCm/HIP dequant kernels not yet implemented for k-quants\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "ROCm runtime loads fine. The dequantization kernel is missing for this quant type.", 0.82, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Dispatch correctly identifies the quant type but has no ROCm kernel to call.", 0.80, True
+            ),
+            "kernel": SpecialistOpinion(
+                "K-quant dequantization uses CUDA-specific warp shuffle instructions. "
+                "Need to re-quantize to Q4_0 or Q8_0 for ROCm, or convert to a supported format.", 0.92, True
+            ),
+            "loader": SpecialistOpinion(
+                "The GGUF file is corrupted. Try re-downloading.", 0.30, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[SGLang] GGUF header: Q4_K_M, 70B params, 80 layers\n"
+                "[SGLang] ROCm dequant kernel registry: Q4_0, Q8_0, FP16\n"
+                "[SGLang] Q4_K_M not in registry\n"
+                "[SGLang] K-quant kernels use __shfl_xor_sync (CUDA only)"
+            ),
+            config=(
+                "gguf_quant_type: Q4_K_M\n"
+                "rocm_supported: [Q4_0, Q8_0, FP16]\n"
+                "k_quant_rocm_support: false\n"
+                "gpu_vendor: AMD"
+            ),
+            snippet=(
+                "# Q4_K_M uses k-quant mixed precision (4-bit with 6-bit super-blocks)\n"
+                "# CUDA kernel uses __shfl_xor_sync for dequant\n"
+                "# No HIP equivalent implemented in SGLang\n"
+                "# Fix: re-quantize model to Q8_0 or Q4_0 for ROCm\n"
+                "# Or: convert GGUF to safetensors with AWQ/GPTQ quantization"
+            ),
+            metrics=(
+                "load_failures: 1\n"
+                "quant_type: Q4_K_M\n"
+                "rocm_kernel_available: false\n"
+                "nvidia_kernel_available: true"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "ROCm works. K-quant dequant kernels are CUDA-only in SGLang.",
+            "dispatch": "Dispatch is correct in rejecting unsupported quant type. Need compatible quant format.",
+            "kernel": "Re-quantize to Q4_0 or Q8_0 which have HIP/ROCm kernels. Or use AWQ instead of GGUF.",
+            "loader": "File is fine. The quant format just isn't supported on ROCm.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="quantization_error_06",
+        root_cause="quantization_error",
+        correct_fix="fix_quantization",
+        incident_ticket=(
+            "INCIDENT: Marlin INT4 kernel on DGX Spark gives wrong results for "
+            "Llama-4-Maverick MoE model. Dense layers quantize fine but expert FFN "
+            "weights have incorrect permutation after Marlin repacking."
+        ),
+        hardware="NVIDIA SM121 (DGX Spark)",
+        model_name="Llama-4-Maverick-17Bx128E",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Marlin INT4 kernel loading...\n"
+            "[vLLM] Repacking GPTQ weights to Marlin format...\n"
+            "[vLLM] Dense layers: repack OK (verified against reference)\n"
+            "[vLLM] Expert 0 FFN: repack MISMATCH (output differs from GPTQ reference)\n"
+            "[vLLM] 73 of 128 experts have repack errors"
+        ),
+        initial_snippet=(
+            "# vllm/quantization/marlin_repack.py\n"
+            "def repack_gptq_to_marlin(qweight, scales, g_idx, num_experts=None):\n"
+            "    # BUG: expert FFN weight shape is [E, N, K//8]\n"
+            "    # Repacker assumes [N, K//8] (no expert dim)\n"
+            "    perm = get_marlin_permutation(qweight.shape[-2], qweight.shape[-1])\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime fine. Marlin kernel launches. Output is wrong.", 0.75, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "Marlin kernel dispatched. But the weight repacking has a shape handling bug.", 0.72, True
+            ),
+            "kernel": SpecialistOpinion(
+                "Marlin repacker doesn't handle the 3D expert weight tensor [E, N, K//8]. "
+                "It treats the expert dimension as part of N, creating wrong permutation. "
+                "Need to repack each expert slice independently.", 0.95, True
+            ),
+            "loader": SpecialistOpinion(
+                "The model has too many experts. Try reducing the number of active experts.", 0.30, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[Marlin] Expert weight shape: [128, 4096, 512]\n"
+                "[Marlin] Repacker expected: [4096, 512] per expert\n"
+                "[Marlin] Repacker got: [128*4096, 512] (flattened expert dim into N)\n"
+                "[Marlin] Permutation computed for 524288 rows instead of 4096 rows"
+            ),
+            config=(
+                "num_experts: 128\n"
+                "expert_ffn_shape: [128, 4096, 512]\n"
+                "expected_per_expert: [4096, 512]\n"
+                "marlin_repack_dim: 2D_only\n"
+                "repack_bug: expert_dim_flattened"
+            ),
+            snippet=(
+                "# Marlin repacker assumes 2D weight matrix [N, K//8]\n"
+                "# MoE expert weights are 3D [E, N, K//8]\n"
+                "# Repacker flattens to [E*N, K//8] -> wrong permutation\n"
+                "# Fix: iterate over expert dim and repack each [N, K//8] slice"
+            ),
+            metrics=(
+                "experts_with_repack_error: 73\n"
+                "total_experts: 128\n"
+                "dense_layers_correct: true\n"
+                "output_cosine_sim: 0.12\n"
+                "expected_cosine_sim: 0.99"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Runtime fine. Weight repacking is wrong for 3D expert tensors.",
+            "dispatch": "Marlin dispatch is OK. Fix the repack function to handle expert dimension.",
+            "kernel": "Repack each expert slice [N, K//8] independently. Don't flatten the expert dim.",
+            "loader": "Number of experts is fine. The Marlin repacker has a shape bug for MoE weights.",
+        },
+    ))
+
+    # --- distributed_comm scenarios ---
+    scenarios.append(Scenario(
+        id="distributed_comm_01",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: 8-GPU tensor parallel DeepSeek-V3-671B hangs during all-reduce on H100. "
+            "Model loads, first forward pass completes, second forward pass hangs indefinitely. "
+            "NCCL timeout after 300 seconds. Single-GPU works fine."
+        ),
+        hardware="NVIDIA H100",
+        model_name="DeepSeek-V3-671B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Tensor parallel size: 8\n"
+            "[vLLM] NCCL version: 2.21.5\n"
+            "[vLLM] Forward pass 1: OK (12.3s)\n"
+            "[vLLM] Forward pass 2: all-reduce HANG at layer 3\n"
+            "[NCCL] WARN Timeout after 300000ms on rank 5"
+        ),
+        initial_snippet=(
+            "# Environment\n"
+            "NCCL_P2P_DISABLE=0\n"
+            "NCCL_IB_DISABLE=0\n"
+            "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7\n"
+            "# GPUs span two NVSwitch domains (0-3 and 4-7)\n"
+            "# NCCL topology detection may be incorrect\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime is fine on all 8 GPUs individually. The hang is in NCCL collective.", 0.82, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Backend dispatches correctly. Tensor parallel scatter/gather is the issue.", 0.70, False
+            ),
+            "kernel": SpecialistOpinion(
+                "NCCL all-reduce hangs because rank 5 (GPU 5) is using a different communicator "
+                "than ranks 0-4. Two NVSwitch domains need NCCL_CROSS_NIC=1 and proper "
+                "NCCL_SOCKET_IFNAME configuration.", 0.93, True
+            ),
+            "loader": SpecialistOpinion(
+                "Weights sharded correctly across 8 GPUs. Not a loading issue.", 0.65, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[NCCL] Topology: 2 NVSwitch domains [0-3] [4-7]\n"
+                "[NCCL] Ring 0: 0->1->2->3->4 (crosses domain boundary)\n"
+                "[NCCL] Rank 5 timeout: peer 4 not responding on NVLink\n"
+                "[NCCL] NVLink 4->5: bandwidth 0 (link not established across domains)\n"
+                "[NCCL] NCCL_CROSS_NIC not set, defaults to 0"
+            ),
+            config=(
+                "tensor_parallel_size: 8\n"
+                "nccl_version: 2.21.5\n"
+                "nvswitch_domains: 2\n"
+                "domain_0_gpus: [0,1,2,3]\n"
+                "domain_1_gpus: [4,5,6,7]\n"
+                "nccl_cross_nic: 0"
+            ),
+            snippet=(
+                "# 8 GPUs span 2 NVSwitch domains\n"
+                "# NCCL ring tries to route 4->5 via NVLink but no direct link\n"
+                "# Cross-domain traffic needs to go via PCIe/InfiniBand\n"
+                "# Fix: set NCCL_CROSS_NIC=1, NCCL_NET_GDR_LEVEL=5"
+            ),
+            metrics=(
+                "successful_allreduce: 1\n"
+                "hung_allreduce: 1\n"
+                "timeout_rank: 5\n"
+                "nvlink_4_5_bandwidth: 0\n"
+                "nccl_timeout_ms: 300000"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "CUDA fine on each GPU. NCCL cross-domain communication is the issue.",
+            "dispatch": "Tensor parallel dispatch is correct. NCCL topology config is wrong.",
+            "kernel": "Set NCCL_CROSS_NIC=1 and NCCL_NET_GDR_LEVEL=5 for cross-NVSwitch-domain communication.",
+            "loader": "Weights sharded correctly. Communication config is the problem.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="distributed_comm_02",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: Pipeline parallel Qwen3-235B on 4xMI300X has 50% lower throughput "
+            "than expected. Bubble overhead is 60% instead of expected 15%. "
+            "Pipeline stages are severely imbalanced."
+        ),
+        hardware="AMD MI300X",
+        model_name="Qwen3-235B-A22B",
+        backend="SGLang 0.5.x",
+        initial_log=(
+            "[SGLang] Pipeline parallel: 4 stages\n"
+            "[SGLang] Stage 0 (layers 0-14): avg 45ms\n"
+            "[SGLang] Stage 1 (layers 15-29): avg 42ms\n"
+            "[SGLang] Stage 2 (layers 30-44): avg 180ms (MoE layers!)\n"
+            "[SGLang] Stage 3 (layers 45-59): avg 175ms\n"
+            "[SGLang] Pipeline bubble: 60% (stages 0-1 idle waiting for 2-3)"
+        ),
+        initial_snippet=(
+            "# sglang_config.yaml\n"
+            "pipeline_parallel_size: 4\n"
+            "# Default: equal layer split (15 layers per stage)\n"
+            "# Qwen3 MoE: layers 30-59 have MoE blocks (4x slower)\n"
+            "# Uniform split creates severe load imbalance\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "ROCm runtime healthy on all 4 GPUs. No communication errors.", 0.75, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "Pipeline parallel stages have severe load imbalance. MoE layers in stages 2-3 "
+                "are 4x slower than dense layers in stages 0-1. Need non-uniform stage partitioning.", 0.94, True
+            ),
+            "kernel": SpecialistOpinion(
+                "MoE expert dispatch takes longer due to all-to-all communication within each "
+                "pipeline stage. Consider tensor parallel for MoE layers instead.", 0.55, False
+            ),
+            "loader": SpecialistOpinion(
+                "Pipeline split should put fewer MoE layers per stage. "
+                "Recommended: 20 layers in stages 0-1, 10 layers in stages 2-3.", 0.90, True
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[SGLang] Stage timing (ms): [45, 42, 180, 175]\n"
+                "[SGLang] Slowest stage: 180ms (4x faster stages)\n"
+                "[SGLang] Pipeline bubble: 135ms per micro-batch\n"
+                "[SGLang] MoE layers: 30-59 (all in stages 2-3)\n"
+                "[SGLang] Dense layers: 0-29 (all in stages 0-1)"
+            ),
+            config=(
+                "pipeline_parallel_size: 4\n"
+                "layers_per_stage: [15, 15, 15, 15]\n"
+                "moe_layers: [30, 31, ..., 59]\n"
+                "stage_0_1_type: dense\n"
+                "stage_2_3_type: moe"
+            ),
+            snippet=(
+                "# Uniform split: [0-14, 15-29, 30-44, 45-59]\n"
+                "# Stages 0-1: dense only (fast)\n"
+                "# Stages 2-3: MoE only (slow)\n"
+                "# Fix: rebalance to [0-19, 20-39, 40-49, 50-59]\n"
+                "# Or: [0-24, 25-44, 45-54, 55-59] for more even timing"
+            ),
+            metrics=(
+                "pipeline_bubble_pct: 60\n"
+                "expected_bubble_pct: 15\n"
+                "throughput_tokens_per_sec: 850\n"
+                "expected_throughput: 1700\n"
+                "stage_imbalance_ratio: 4.3x"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "No communication errors. Throughput issue from pipeline imbalance.",
+            "dispatch": "Rebalance pipeline stages: put more dense layers per stage, fewer MoE layers per stage.",
+            "kernel": "MoE layers are just slower. The fix is pipeline partitioning, not kernel changes.",
+            "loader": "Re-partition: stages 0-1 get 20 layers each, stages 2-3 get 10 layers each.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="distributed_comm_03",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: vLLM tensor parallel on 2xRTX 5090 via PCIe has 90% communication "
+            "overhead. All-reduce takes 85ms but compute only takes 9ms per layer. "
+            "Expected NVLink but system has PCIe only."
+        ),
+        hardware="NVIDIA SM120 (GeForce RTX 5090)",
+        model_name="Llama-3.3-70B-Instruct",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Tensor parallel size: 2\n"
+            "[vLLM] NCCL init: using PCIe transport (no NVLink detected)\n"
+            "[vLLM] All-reduce per layer: 85ms (PCIe 5.0 x16)\n"
+            "[vLLM] Compute per layer: 9ms\n"
+            "[vLLM] Communication overhead: 90.4%\n"
+            "[vLLM] Total latency per token: 7520ms (expected: ~800ms)"
+        ),
+        initial_snippet=(
+            "# system config\n"
+            "# 2x RTX 5090 in PCIe slots (no NVLink bridge)\n"
+            "# PCIe 5.0 x16: ~64 GB/s bidirectional\n"
+            "# NVLink 5: ~900 GB/s (not available)\n"
+            "tensor_parallel_size: 2\n"
+            "# All-reduce over PCIe is bottleneck\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime fine. PCIe link healthy but slow for TP all-reduce.", 0.80, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Tensor parallel is wrong strategy for PCIe-only multi-GPU. "
+                "Should use pipeline parallel instead — it only sends activations between stages "
+                "(much less data than TP all-reduce). Or use single-GPU with quantization.", 0.94, True
+            ),
+            "kernel": SpecialistOpinion(
+                "Maybe the NCCL kernel is using a suboptimal algorithm for PCIe.", 0.50, False
+            ),
+            "loader": SpecialistOpinion(
+                "Model weights split correctly across 2 GPUs. Loading is fine.", 0.65, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[NCCL] Transport: PCIe 5.0 x16\n"
+                "[NCCL] Bandwidth: 32 GB/s per direction\n"
+                "[NCCL] All-reduce data per layer: 2.7 GB\n"
+                "[NCCL] All-reduce time: 2.7GB / 32GB/s = 84ms\n"
+                "[NCCL] 80 layers * 84ms = 6720ms communication per token"
+            ),
+            config=(
+                "transport: pcie_5_x16\n"
+                "bandwidth_per_dir_gbs: 32\n"
+                "allreduce_per_layer_gb: 2.7\n"
+                "nvlink_available: false\n"
+                "tensor_parallel_size: 2"
+            ),
+            snippet=(
+                "# TP all-reduce sends hidden_size * dtype_bytes per layer\n"
+                "# 8192 * 2 * batch * seq_len = ~2.7GB per layer\n"
+                "# PCIe: 2.7GB / 32GB/s = 84ms per layer\n"
+                "# Fix: switch to pipeline parallel (sends only activations)\n"
+                "# Or: use single-GPU with INT4 quantization (fits in 32GB)"
+            ),
+            metrics=(
+                "allreduce_ms_per_layer: 85\n"
+                "compute_ms_per_layer: 9\n"
+                "comm_overhead_pct: 90.4\n"
+                "total_latency_ms: 7520\n"
+                "expected_with_nvlink_ms: 800"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "PCIe link is healthy but bandwidth-limited for TP. Switch parallel strategy.",
+            "dispatch": "Switch from tensor parallel to pipeline parallel, or use single-GPU with INT4 quantization.",
+            "kernel": "NCCL algorithm is optimal for PCIe. The interconnect is just too slow for TP.",
+            "loader": "Weights loaded fine. The parallel strategy needs to change.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="distributed_comm_04",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: 4-node distributed vLLM serving DeepSeek-V3-671B has intermittent "
+            "NCCL errors. Every ~100 requests, one node reports 'unhandled system error' "
+            "in all-gather. Network MTU mismatch between nodes suspected."
+        ),
+        hardware="NVIDIA B200",
+        model_name="DeepSeek-V3-671B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Distributed: 4 nodes, 8 GPUs each (32 total)\n"
+            "[NCCL] Init: IB transport, 4 HCAs per node\n"
+            "[vLLM] Request 87: NCCL error on node 2\n"
+            "[NCCL] node2: unhandled system error (NCCL_SYSTEM_ERROR)\n"
+            "[NCCL] Suspected: IB message size exceeds MTU on switch"
+        ),
+        initial_snippet=(
+            "# Network config\n"
+            "# Nodes 0,1,3: MTU=4096 (IB)\n"
+            "# Node 2: MTU=2048 (different switch port config)\n"
+            "# NCCL_IB_GID_INDEX=3\n"
+            "# No explicit NCCL_IB_TC or NCCL_IB_TIMEOUT set\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime healthy on all nodes. NCCL error is network-level.", 0.82, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "The error seems random but always involves node 2. Check node 2's IB config.", 0.75, False
+            ),
+            "kernel": SpecialistOpinion(
+                "NCCL uses IB RDMA with MTU-sized messages. Node 2 has MTU=2048 while others "
+                "have 4096. When NCCL sends a 4096-byte message to node 2, the IB switch drops it. "
+                "Fix: align MTU to 4096 on node 2's switch port.", 0.94, True
+            ),
+            "loader": SpecialistOpinion(
+                "Model weights distributed correctly across 32 GPUs. Not a loading issue.", 0.65, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[NCCL] Node 0 IB MTU: 4096\n"
+                "[NCCL] Node 1 IB MTU: 4096\n"
+                "[NCCL] Node 2 IB MTU: 2048 (MISMATCH)\n"
+                "[NCCL] Node 3 IB MTU: 4096\n"
+                "[NCCL] Messages >2048 to node 2: DROPPED\n"
+                "[NCCL] Error frequency: ~1 per 100 requests (when large all-gather hits node 2)"
+            ),
+            config=(
+                "nodes: 4\n"
+                "gpus_per_node: 8\n"
+                "ib_mtu_node0: 4096\n"
+                "ib_mtu_node1: 4096\n"
+                "ib_mtu_node2: 2048\n"
+                "ib_mtu_node3: 4096\n"
+                "nccl_ib_timeout: default"
+            ),
+            snippet=(
+                "# Node 2 IB switch port configured with MTU=2048\n"
+                "# Other nodes: MTU=4096\n"
+                "# NCCL sends 4096-byte IB messages -> dropped at node 2's switch\n"
+                "# Fix: reconfigure node 2's switch port to MTU=4096\n"
+                "# Workaround: NCCL_IB_TC=128, NCCL_IB_TIMEOUT=22"
+            ),
+            metrics=(
+                "nccl_errors: 47 in 1 hour\n"
+                "errors_on_node2: 47\n"
+                "errors_on_other_nodes: 0\n"
+                "avg_requests_between_errors: 103\n"
+                "ib_mtu_mismatch: true"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "CUDA runtime is fine. NCCL errors from IB MTU mismatch on node 2.",
+            "dispatch": "Node 2 is the problem. IB config needs to match other nodes.",
+            "kernel": "Set node 2 IB MTU to 4096 to match the cluster. Or set NCCL_IB_TC=128 as workaround.",
+            "loader": "Weight distribution is correct. Network MTU mismatch is the root cause.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="distributed_comm_05",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: Expert parallel DeepSeek-V3-671B on 8xMI355X has all-to-all "
+            "communication deadlock. Token routing to remote experts hangs when "
+            "more than 4 GPUs are involved. 4-GPU EP works fine."
+        ),
+        hardware="AMD MI355X",
+        model_name="DeepSeek-V3-671B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] Expert parallel: 8 GPUs, 32 experts per GPU\n"
+            "[RCCL] All-to-all init: 8 ranks\n"
+            "[vLLM] MoE token routing: sending tokens to remote experts...\n"
+            "[RCCL] HANG: all-to-all stuck at rank 6 (waiting for rank 2)\n"
+            "[RCCL] Timeout after 600s. 4-GPU EP (ranks 0-3) works fine."
+        ),
+        initial_snippet=(
+            "# RCCL config\n"
+            "RCCL_ALLTOALL_KERNEL=1  # basic kernel\n"
+            "# 8 MI355X connected via xGMI + Infinity Fabric\n"
+            "# xGMI: 4-GPU pod (GPUs 0-3) and (GPUs 4-7)\n"
+            "# Cross-pod: Infinity Fabric bridge\n"
+            "# RCCL kernel 1 doesn't handle cross-pod routing\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "ROCm runtime healthy. RCCL all-to-all kernel selection is wrong for 8-GPU topology.", 0.85, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Expert parallel dispatch routes tokens correctly. The communication primitive is the issue.", 0.72, False
+            ),
+            "kernel": SpecialistOpinion(
+                "RCCL all-to-all kernel 1 assumes fully connected topology. "
+                "8 MI355X has 2 xGMI pods bridged by Infinity Fabric. "
+                "Need kernel 2 (hierarchical) for cross-pod communication.", 0.93, True
+            ),
+            "loader": SpecialistOpinion(
+                "Expert weights distributed correctly. All-to-all comm is the bottleneck.", 0.68, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[RCCL] Topology: 2 xGMI pods [0-3] [4-7]\n"
+                "[RCCL] Intra-pod bandwidth: 896 GB/s\n"
+                "[RCCL] Cross-pod bandwidth: 128 GB/s (Infinity Fabric)\n"
+                "[RCCL] All-to-all kernel 1: flat ring (assumes uniform links)\n"
+                "[RCCL] Ring 0->1->2->3->4 blocked at 3->4 (cross-pod)\n"
+                "[RCCL] Deadlock: rank 6 waits for rank 2 via pod bridge"
+            ),
+            config=(
+                "expert_parallel_size: 8\n"
+                "rccl_alltoall_kernel: 1\n"
+                "topology: 2_xgmi_pods\n"
+                "intra_pod_bw_gbs: 896\n"
+                "cross_pod_bw_gbs: 128"
+            ),
+            snippet=(
+                "# RCCL kernel 1: flat ring all-to-all\n"
+                "# Assumes all links have equal bandwidth\n"
+                "# Cross-pod link (128 GB/s) vs intra-pod (896 GB/s)\n"
+                "# Flat ring deadlocks when cross-pod link saturates\n"
+                "# Fix: RCCL_ALLTOALL_KERNEL=2 (hierarchical)\n"
+                "# Or: set RCCL_NCHANNELS=16 for cross-pod"
+            ),
+            metrics=(
+                "deadlock_count: 12 in 1 hour\n"
+                "4gpu_ep_deadlocks: 0\n"
+                "8gpu_ep_deadlocks: 12\n"
+                "cross_pod_saturation_pct: 100\n"
+                "intra_pod_utilization_pct: 15"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "ROCm fine. RCCL kernel selection needs to account for 2-pod topology.",
+            "dispatch": "Expert routing is correct. RCCL transport is the issue.",
+            "kernel": "Set RCCL_ALLTOALL_KERNEL=2 for hierarchical all-to-all across xGMI pods.",
+            "loader": "Expert weight distribution is correct. Fix RCCL kernel config.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="distributed_comm_06",
+        root_cause="distributed_comm",
+        correct_fix="fix_comm_config",
+        incident_ticket=(
+            "INCIDENT: TensorRT-LLM multi-node inference on 2x DGX Spark (16 GPUs total) "
+            "has 40% throughput drop compared to single-node 8-GPU. "
+            "Inter-node all-reduce over RoCE is bottlenecked. TCP fallback detected."
+        ),
+        hardware="NVIDIA SM121 (DGX Spark)",
+        model_name="Mistral-Large-2",
+        backend="TensorRT-LLM 0.18",
+        initial_log=(
+            "[TensorRT-LLM] 2 nodes, 8 GPUs each, TP=16\n"
+            "[NCCL] Transport: NET/Socket (TCP fallback!)\n"
+            "[NCCL] WARNING: RDMA not available, using TCP\n"
+            "[NCCL] Inter-node all-reduce: 340ms (expected: 12ms with RDMA)\n"
+            "[TensorRT-LLM] Throughput: 420 tok/s (expected: 700 tok/s)"
+        ),
+        initial_snippet=(
+            "# Network config\n"
+            "# RoCE v2 NICs installed but not configured\n"
+            "# NCCL_SOCKET_IFNAME=eth0 (TCP fallback)\n"
+            "# RoCE NIC: mlx5_0 (not specified in NCCL config)\n"
+            "# GDR (GPU Direct RDMA) not enabled\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA runtime fine. Network transport is the bottleneck.", 0.78, False
+            ),
+            "dispatch": SpecialistOpinion(
+                "NCCL fell back to TCP sockets instead of RDMA over RoCE. "
+                "Need to configure NCCL_SOCKET_IFNAME to point to the RoCE NIC "
+                "and enable GPU Direct RDMA.", 0.94, True
+            ),
+            "kernel": SpecialistOpinion(
+                "TensorRT-LLM kernels are fine. Inter-node communication is bottlenecked by TCP.", 0.82, True
+            ),
+            "loader": SpecialistOpinion(
+                "Maybe the model is too large for 16-way tensor parallel. Try pipeline parallel.", 0.40, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[NCCL] NCCL_SOCKET_IFNAME=eth0 (1Gbps TCP)\n"
+                "[NCCL] mlx5_0: RoCE v2, 400Gbps (UNCONFIGURED)\n"
+                "[NCCL] GPU Direct RDMA: disabled\n"
+                "[NCCL] TCP all-reduce: 340ms per layer\n"
+                "[NCCL] Expected RDMA all-reduce: 12ms per layer"
+            ),
+            config=(
+                "nccl_socket_ifname: eth0\n"
+                "eth0_speed: 1Gbps\n"
+                "mlx5_0_speed: 400Gbps\n"
+                "rdma_enabled: false\n"
+                "gdr_enabled: false"
+            ),
+            snippet=(
+                "# NCCL using TCP over 1Gbps eth0 instead of 400Gbps RoCE\n"
+                "# RoCE NIC (mlx5_0) available but not configured\n"
+                "# Fix: NCCL_SOCKET_IFNAME=mlx5_0\n"
+                "# Fix: NCCL_NET_GDR_LEVEL=5 (enable GPU Direct RDMA)\n"
+                "# Fix: NCCL_IB_DISABLE=0"
+            ),
+            metrics=(
+                "throughput_tok_s: 420\n"
+                "expected_throughput: 700\n"
+                "tcp_allreduce_ms: 340\n"
+                "rdma_allreduce_ms: 12\n"
+                "inter_node_bandwidth_gbps: 1"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Network stack works. Just using wrong NIC for NCCL.",
+            "dispatch": "Set NCCL_SOCKET_IFNAME=mlx5_0 and enable GDR for 400Gbps RDMA transport.",
+            "kernel": "Compute kernels are fine. Inter-node latency will drop 28x with RDMA.",
+            "loader": "Model size is fine for TP=16. The network config is the problem.",
+        },
+    ))
+
+    # --- driver_compat scenarios ---
+    scenarios.append(Scenario(
+        id="driver_compat_01",
+        root_cause="driver_compat",
+        correct_fix="update_driver_config",
+        incident_ticket=(
+            "INCIDENT: DGX Spark (SM121) with CUDA 12.4 driver fails to run FlashInfer 0.4. "
+            "Error: 'CUDA driver version is insufficient for CUDA runtime version'. "
+            "FlashInfer compiled against CUDA 13.0 but driver only supports up to 12.4."
+        ),
+        hardware="NVIDIA SM121 (DGX Spark)",
+        model_name="DeepSeek-V3-671B",
+        backend="FlashInfer 0.4",
+        initial_log=(
+            "[FlashInfer] Loading CUDA kernels...\n"
+            "[CUDA] Driver version: 12040 (12.4)\n"
+            "[CUDA] Runtime version: 13000 (13.0)\n"
+            "[FlashInfer] ERROR: CUDA driver version is insufficient for CUDA runtime version\n"
+            "[FlashInfer] Required: CUDA driver >= 13.0, found: 12.4"
+        ),
+        initial_snippet=(
+            "# System info\n"
+            "nvidia-smi: Driver Version: 550.54.15 (CUDA 12.4)\n"
+            "# FlashInfer 0.4 was compiled with CUDA 13.0 toolkit\n"
+            "# SM121 GPUs require CUDA 13.0+ driver\n"
+            "# Driver 550.x only supports up to CUDA 12.4\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA driver 550.x (12.4) cannot load CUDA 13.0 compiled kernels. "
+                "Need to upgrade to driver 570+ which supports CUDA 13.0.", 0.95, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "FlashInfer dispatch cannot even start. This is a driver-level incompatibility.", 0.80, True
+            ),
+            "kernel": SpecialistOpinion(
+                "The FlashInfer kernel PTX targets SM121 which needs CUDA 13.0 JIT compilation. "
+                "Driver 550.x cannot JIT compile for SM121.", 0.85, True
+            ),
+            "loader": SpecialistOpinion(
+                "Try downgrading FlashInfer to a version compiled with CUDA 12.4.", 0.40, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[CUDA] Driver: 550.54.15 (supports up to CUDA 12.4)\n"
+                "[CUDA] Runtime: 13.0 (required by FlashInfer 0.4)\n"
+                "[CUDA] SM121 JIT compilation requires driver with CUDA 13.0 support\n"
+                "[CUDA] cuModuleLoadData failed: CUDA_ERROR_NO_BINARY_FOR_GPU"
+            ),
+            config=(
+                "driver_version: 550.54.15\n"
+                "max_cuda_version: 12.4\n"
+                "required_cuda_version: 13.0\n"
+                "gpu_arch: sm_121\n"
+                "flashinfer_cuda_version: 13.0"
+            ),
+            snippet=(
+                "# Driver 550.x: CUDA 12.4 max\n"
+                "# FlashInfer 0.4: compiled with CUDA 13.0\n"
+                "# SM121 PTX needs CUDA 13.0 JIT\n"
+                "# Fix: upgrade driver to 570+ (CUDA 13.0 support)"
+            ),
+            metrics=(
+                "driver_cuda_max: 12.4\n"
+                "required_cuda: 13.0\n"
+                "kernel_load_failures: 1\n"
+                "jit_compilation: failed"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Upgrade NVIDIA driver to 570+ for CUDA 13.0 support.",
+            "dispatch": "Can't dispatch until driver supports CUDA 13.0.",
+            "kernel": "SM121 kernels need CUDA 13.0 JIT. Driver 550.x can't do it.",
+            "loader": "Downgrading FlashInfer won't help — SM121 requires CUDA 13.0 regardless.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="driver_compat_02",
+        root_cause="driver_compat",
+        correct_fix="update_driver_config",
+        incident_ticket=(
+            "INCIDENT: ROCm 6.3 driver on MI300X silently produces wrong FP8 results. "
+            "Model outputs have subtle accuracy degradation (perplexity 14 vs expected 9). "
+            "ROCm 6.3.0 has known bug in FP8 MFMA instruction for certain matrix sizes."
+        ),
+        hardware="AMD MI300X",
+        model_name="DeepSeek-R1-Distill-70B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] ROCm version: 6.3.0\n"
+            "[vLLM] FP8 inference: e4m3fnuz format\n"
+            "[vLLM] Output quality: marginal (perplexity 14.2, threshold 10)\n"
+            "[vLLM] BF16 reference: perplexity 8.9 (correct)\n"
+            "[vLLM] FP8 accuracy gap: 5.3 perplexity points (abnormal)"
+        ),
+        initial_snippet=(
+            "# ROCm 6.3.0 release notes (known issues)\n"
+            "# BUG: FP8 MFMA instruction produces incorrect results\n"
+            "#   when M=16, N=16, K=32 and matrix A is transposed\n"
+            "#   Affects: MI300X, MI355X\n"
+            "#   Fixed in: ROCm 6.3.1\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "ROCm 6.3.0 has a known FP8 MFMA bug. The driver produces silently wrong results "
+                "for specific matrix dimensions. Need ROCm 6.3.1 hotfix.", 0.95, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "FP8 backend selected correctly. The hardware instruction has a bug.", 0.70, False
+            ),
+            "kernel": SpecialistOpinion(
+                "The FP8 MFMA kernel triggers a known ROCm 6.3.0 driver bug for M16N16K32 "
+                "with transposed A. This isn't a software kernel issue — it's the hardware "
+                "microcode. Update to ROCm 6.3.1.", 0.92, True
+            ),
+            "loader": SpecialistOpinion(
+                "Weights loaded correctly. BF16 works fine, only FP8 is affected.", 0.68, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[ROCm] Version: 6.3.0 (known FP8 MFMA bug)\n"
+                "[FP8] MFMA M16N16K32 with transA: incorrect accumulation\n"
+                "[FP8] Affected layers: 23 of 80 (those using transposed A)\n"
+                "[FP8] BF16 MFMA: correct (no bug in BF16 path)\n"
+                "[ROCm] Fix available: ROCm 6.3.1"
+            ),
+            config=(
+                "rocm_version: 6.3.0\n"
+                "fp8_mfma_bug: true\n"
+                "affected_config: M16N16K32_transA\n"
+                "fix_version: 6.3.1\n"
+                "bf16_affected: false"
+            ),
+            snippet=(
+                "# ROCm 6.3.0 FP8 MFMA bug:\n"
+                "# mfma_f32_16x16x32_fp8 with transposed A matrix\n"
+                "# Accumulator gets wrong partial sums\n"
+                "# Silent data corruption (no error, just wrong results)\n"
+                "# Fix: upgrade to ROCm 6.3.1 or use BF16 as workaround"
+            ),
+            metrics=(
+                "fp8_perplexity: 14.2\n"
+                "bf16_perplexity: 8.9\n"
+                "accuracy_gap: 5.3\n"
+                "affected_layers: 23\n"
+                "total_layers: 80"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Upgrade to ROCm 6.3.1 which fixes the FP8 MFMA accumulator bug.",
+            "dispatch": "Dispatch is correct. The hardware instruction is buggy.",
+            "kernel": "Not a kernel bug — it's ROCm 6.3.0 microcode. Update to 6.3.1.",
+            "loader": "Weights are fine. Only FP8 MFMA is affected.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="driver_compat_03",
+        root_cause="driver_compat",
+        correct_fix="update_driver_config",
+        incident_ticket=(
+            "INCIDENT: RTX 5090 (SM120) fails TensorRT-LLM engine build. Error: "
+            "'No registered converter for SM120'. TensorRT-LLM 0.18 was built against "
+            "CUDA 12.8 but SM120 needs CUDA 13.0 compiler support."
+        ),
+        hardware="NVIDIA SM120 (GeForce RTX 5090)",
+        model_name="Llama-3.3-70B-Instruct",
+        backend="TensorRT-LLM 0.18",
+        initial_log=(
+            "[TensorRT-LLM] Building engine for SM120...\n"
+            "[TensorRT] CUDA toolkit: 12.8\n"
+            "[TensorRT] ERROR: No code generator for sm_120\n"
+            "[TensorRT] sm_120 requires CUDA toolkit >= 13.0\n"
+            "[TensorRT] Available targets: sm_70, sm_75, sm_80, sm_86, sm_89, sm_90"
+        ),
+        initial_snippet=(
+            "# TensorRT-LLM build environment\n"
+            "cuda_toolkit: 12.8\n"
+            "tensorrt_version: 10.4\n"
+            "# SM120 code generation requires CUDA 13.0+\n"
+            "# TensorRT-LLM 0.18 was compiled with CUDA 12.8\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "CUDA toolkit 12.8 cannot generate code for SM120. Need CUDA 13.0+ toolkit "
+                "and matching TensorRT version.", 0.94, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "TensorRT engine can't be built. Need newer CUDA toolkit.", 0.82, True
+            ),
+            "kernel": SpecialistOpinion(
+                "Try using compute_90 as a fallback target for SM120.", 0.45, False
+            ),
+            "loader": SpecialistOpinion(
+                "The model format is fine. It's the build toolchain that's outdated.", 0.70, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[TensorRT] CUDA toolkit 12.8: sm_120 not in target list\n"
+                "[TensorRT] sm_120 added in CUDA 13.0\n"
+                "[TensorRT] TensorRT 10.4 built with CUDA 12.8\n"
+                "[TensorRT] Need TensorRT 10.6+ with CUDA 13.0"
+            ),
+            config=(
+                "cuda_toolkit: 12.8\n"
+                "tensorrt: 10.4\n"
+                "sm120_support_min_cuda: 13.0\n"
+                "sm120_support_min_trt: 10.6\n"
+                "available_sm_targets: [70,75,80,86,89,90]"
+            ),
+            snippet=(
+                "# CUDA 12.8 code generator has no SM120 target\n"
+                "# SM120 introduced in CUDA 13.0 toolkit\n"
+                "# TensorRT 10.6+ bundles CUDA 13.0 codegen\n"
+                "# Fix: upgrade to TensorRT-LLM with TRT 10.6 / CUDA 13.0"
+            ),
+            metrics=(
+                "engine_build_failures: 1\n"
+                "sm120_codegen: unavailable\n"
+                "cuda_toolkit: 12.8\n"
+                "required_cuda_toolkit: 13.0"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Upgrade CUDA toolkit to 13.0 and TensorRT to 10.6+ for SM120 support.",
+            "dispatch": "Engine can't be built without SM120 codegen. Upgrade toolchain.",
+            "kernel": "compute_90 fallback won't work — SM120 has different register file layout.",
+            "loader": "Model is fine. Toolchain needs updating for SM120.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="driver_compat_04",
+        root_cause="driver_compat",
+        correct_fix="update_driver_config",
+        incident_ticket=(
+            "INCIDENT: NVIDIA driver 570.86 on B200 causes random GPU resets during "
+            "long inference sequences (>8K tokens). System log shows 'Xid 79: GPU has "
+            "fallen off the bus'. Known driver bug in 570.86 for B200."
+        ),
+        hardware="NVIDIA B200",
+        model_name="Llama-4-Maverick-17Bx128E",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[System] Xid 79: GPU 3 has fallen off the bus\n"
+            "[vLLM] ERROR: CUDA error on GPU 3: device-side assert triggered\n"
+            "[vLLM] Inference failed at token position 8247\n"
+            "[System] nvidia-smi: GPU 3: ERR! (needs reset)\n"
+            "[System] Driver: 570.86.01"
+        ),
+        initial_snippet=(
+            "# NVIDIA driver 570.86 release notes:\n"
+            "# Known issue: B200 GPUs may experience Xid 79 errors\n"
+            "#   during sustained high-power workloads\n"
+            "#   Affected: long-running inference >8K tokens\n"
+            "#   Fixed in: 570.100+\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "Driver 570.86 has a known bug for B200 that causes GPU bus resets "
+                "during sustained high-power inference. Upgrade to 570.100+.", 0.95, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "Cannot fix at the application level. This is a driver bug.", 0.75, False
+            ),
+            "kernel": SpecialistOpinion(
+                "Xid 79 is a hardware-level bus error. The GPU physically disconnects from PCIe. "
+                "This is a driver power management bug, not a kernel issue.", 0.88, True
+            ),
+            "loader": SpecialistOpinion(
+                "Try reducing GPU power limit to prevent thermal issues.", 0.35, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[System] dmesg: NVRM: Xid 79 at PCI:0000:81:00.0\n"
+                "[System] Driver: 570.86.01\n"
+                "[System] GPU 3 power at crash: 680W (TDP: 700W)\n"
+                "[System] Crash occurs at token position: 8000-10000\n"
+                "[NVIDIA] Known bug: 570.86 B200 power sequencing error"
+            ),
+            config=(
+                "driver_version: 570.86.01\n"
+                "gpu: B200\n"
+                "known_bug: xid_79_b200\n"
+                "fix_version: 570.100\n"
+                "crash_power_watts: 680\n"
+                "tdp_watts: 700"
+            ),
+            snippet=(
+                "# Driver 570.86 B200 power management bug:\n"
+                "# Sustained near-TDP workloads trigger power sequencing error\n"
+                "# GPU drops off PCIe bus (Xid 79)\n"
+                "# Fix: upgrade to driver 570.100+\n"
+                "# Workaround: nvidia-smi -pl 600 (reduce power limit)"
+            ),
+            metrics=(
+                "xid_79_events: 7 in 24 hours\n"
+                "avg_tokens_at_crash: 8743\n"
+                "gpu_power_at_crash_w: 680\n"
+                "driver_version: 570.86\n"
+                "fix_version: 570.100"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Upgrade driver to 570.100+ to fix the B200 power sequencing bug.",
+            "dispatch": "Application-level fix won't help. Driver upgrade needed.",
+            "kernel": "Xid 79 is driver-level. Upgrade to 570.100 or use power limit workaround.",
+            "loader": "Reducing power limit is a workaround but the real fix is driver 570.100+.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="driver_compat_05",
+        root_cause="driver_compat",
+        correct_fix="update_driver_config",
+        incident_ticket=(
+            "INCIDENT: MI355X with ROCm 6.2 driver cannot use FlashAttention-2 for MI355X. "
+            "Error: 'Unsupported AMDGPU target: gfx950'. MI355X (gfx950) was added in "
+            "ROCm 6.4. System running old ROCm from base OS install."
+        ),
+        hardware="AMD MI355X",
+        model_name="Qwen3-235B-A22B",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] GPU: AMD MI355X (gfx950)\n"
+            "[ROCm] Version: 6.2.0\n"
+            "[FlashAttention] Compiling for gfx950...\n"
+            "[FlashAttention] ERROR: gfx950 not supported by ROCm 6.2 compiler\n"
+            "[FlashAttention] Available targets: gfx900, gfx906, gfx908, gfx90a, gfx942"
+        ),
+        initial_snippet=(
+            "# ROCm version check\n"
+            "rocm_version: 6.2.0  # from base OS install\n"
+            "# MI355X (gfx950) support added in ROCm 6.4\n"
+            "# ROCm 6.2 compiler cannot generate gfx950 ISA\n"
+            "# FlashAttention-2 kernel compilation fails\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "ROCm 6.2 does not support gfx950 (MI355X). Need ROCm 6.4+ for this GPU.", 0.95, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "FlashAttention cannot compile kernels for gfx950 on ROCm 6.2. "
+                "This blocks all optimized attention paths.", 0.85, True
+            ),
+            "kernel": SpecialistOpinion(
+                "Try compiling FlashAttention targeting gfx942 as a fallback.", 0.40, False
+            ),
+            "loader": SpecialistOpinion(
+                "Model weights load fine. The kernel compilation is the issue.", 0.65, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[ROCm] Installed: 6.2.0\n"
+                "[ROCm] gfx950 support: NOT AVAILABLE (added in 6.4)\n"
+                "[hipcc] --offload-arch=gfx950: error: unknown target\n"
+                "[FlashAttention] Cannot JIT compile attention kernels\n"
+                "[vLLM] Falling back to naive attention (10x slower)"
+            ),
+            config=(
+                "rocm_version: 6.2.0\n"
+                "gpu_target: gfx950\n"
+                "gfx950_min_rocm: 6.4\n"
+                "available_targets: [gfx900,gfx906,gfx908,gfx90a,gfx942]\n"
+                "flashattention_status: compilation_failed"
+            ),
+            snippet=(
+                "# ROCm 6.2 compiler targets: gfx900-gfx942\n"
+                "# gfx950 (MI355X) added in ROCm 6.4\n"
+                "# No backward compatibility — gfx950 ISA differs from gfx942\n"
+                "# Fix: upgrade ROCm to 6.4+"
+            ),
+            metrics=(
+                "kernel_compilation_failures: 1\n"
+                "attention_backend: naive_fallback\n"
+                "attention_slowdown: 10x\n"
+                "rocm_version: 6.2.0\n"
+                "required_rocm: 6.4"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Upgrade ROCm to 6.4+ to get gfx950 compiler support.",
+            "dispatch": "All optimized attention paths blocked. ROCm upgrade is required.",
+            "kernel": "gfx942 fallback won't work — ISA is incompatible. Must use native gfx950 from ROCm 6.4.",
+            "loader": "Model loads but runs on naive attention at 10x penalty. Fix is ROCm upgrade.",
+        },
+    ))
+
+    scenarios.append(Scenario(
+        id="driver_compat_06",
+        root_cause="driver_compat",
+        correct_fix="update_driver_config",
+        incident_ticket=(
+            "INCIDENT: H100 with driver 535 LTS cannot use FP8 tensor cores. "
+            "FP8 GEMM falls back to FP16 emulation causing 3x slowdown. "
+            "Driver 535 technically supports H100 but has incomplete FP8 support."
+        ),
+        hardware="NVIDIA H100",
+        model_name="Mistral-Large-2",
+        backend="vLLM 0.8.x",
+        initial_log=(
+            "[vLLM] GPU: H100 SXM (SM90)\n"
+            "[CUDA] Driver: 535.183.01 (LTS)\n"
+            "[vLLM] FP8 GEMM: attempting to use tensor cores...\n"
+            "[cuBLAS] WARNING: FP8 GEMM not supported by driver, falling back to FP16 emulation\n"
+            "[vLLM] Token generation: 45 tok/s (expected: 135 tok/s with native FP8)"
+        ),
+        initial_snippet=(
+            "# Driver 535 (LTS) limitations:\n"
+            "# - H100 SM90 basic support: YES\n"
+            "# - FP8 tensor core (e4m3fn GEMM): INCOMPLETE\n"
+            "# - cuBLAS FP8 API: stub only (returns CUBLAS_STATUS_NOT_SUPPORTED)\n"
+            "# - Full FP8 requires driver 545+\n"
+        ),
+        specialist_opinions={
+            "runtime": SpecialistOpinion(
+                "Driver 535 LTS has incomplete FP8 cuBLAS support. Upgrade to 545+ for "
+                "full FP8 tensor core acceleration on H100.", 0.94, True
+            ),
+            "dispatch": SpecialistOpinion(
+                "vLLM correctly attempts FP8 but cuBLAS returns NOT_SUPPORTED. "
+                "Fallback to FP16 emulation is working but slow.", 0.80, True
+            ),
+            "kernel": SpecialistOpinion(
+                "Maybe the FP8 weights are in the wrong format for this cuBLAS version.", 0.45, False
+            ),
+            "loader": SpecialistOpinion(
+                "FP8 model loaded fine. The slowdown is from driver-level FP8 emulation.", 0.72, False
+            ),
+        },
+        inspect_results=InspectResult(
+            logs=(
+                "[cuBLAS] Version: 12.3 (driver 535)\n"
+                "[cuBLAS] cublasLtMatmul with FP8: CUBLAS_STATUS_NOT_SUPPORTED\n"
+                "[cuBLAS] Fallback: FP8 -> FP16 upcast -> FP16 GEMM -> FP8 downcast\n"
+                "[cuBLAS] FP8 emulation overhead: 3.1x\n"
+                "[cuBLAS] Native FP8 requires cuBLAS 12.5+ (driver 545+)"
+            ),
+            config=(
+                "driver_version: 535.183.01\n"
+                "cublas_version: 12.3\n"
+                "fp8_native_support: false\n"
+                "fp8_emulation: true\n"
+                "min_driver_for_fp8: 545"
+            ),
+            snippet=(
+                "# Driver 535 LTS: cuBLAS 12.3 stubs FP8 API\n"
+                "# Returns NOT_SUPPORTED, triggers FP16 emulation path\n"
+                "# FP8 -> FP16 upcast + FP16 GEMM + FP8 downcast = 3x slower\n"
+                "# Fix: upgrade to driver 545+ for native FP8 cuBLAS"
+            ),
+            metrics=(
+                "throughput_tok_s: 45\n"
+                "expected_throughput: 135\n"
+                "fp8_emulation_overhead: 3.1x\n"
+                "cublas_fp8_status: NOT_SUPPORTED\n"
+                "driver: 535.183.01"
+            ),
+        ),
+        specialist_followups={
+            "runtime": "Upgrade from driver 535 LTS to 545+ for native FP8 cuBLAS support.",
+            "dispatch": "FP8 dispatch falls back to emulation. Driver upgrade will enable native path.",
+            "kernel": "FP8 weight format is correct. cuBLAS just can't use FP8 tensor cores with driver 535.",
+            "loader": "Weights are fine. Driver needs upgrading for FP8 acceleration.",
+        },
+    ))
+
     return scenarios
 
 
 # Build the full scenario pool
-SCENARIOS = _make_scenarios()
-# _01, _03, _04, _05 = train; _02, _06 = eval
-TRAIN_SCENARIOS = [s for s in SCENARIOS if s.id.endswith(("_01", "_03", "_04", "_05"))]
-EVAL_SCENARIOS = [s for s in SCENARIOS if s.id.endswith(("_02", "_06"))]
+_HANDCRAFTED_SCENARIOS = _make_scenarios()
+
+
+# ---------------------------------------------------------------------------
+# Load scraped scenarios from generated_scenarios_full.json
+# ---------------------------------------------------------------------------
+
+def load_scraped_scenarios(path: str) -> list[Scenario]:
+    """Load scraped scenarios from a JSON file and convert to Scenario objects.
+
+    Missing fields (inspect_results, specialist_followups) are synthesized
+    from the available data so every Scenario is fully populated.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    scenarios: list[Scenario] = []
+    for entry in raw:
+        # --- specialist_opinions: dict-of-dicts -> dict-of-SpecialistOpinion ---
+        specialist_opinions: dict[str, SpecialistOpinion] = {}
+        for name, op_dict in entry.get("specialist_opinions", {}).items():
+            specialist_opinions[name] = SpecialistOpinion(
+                opinion=op_dict["opinion"],
+                confidence=float(op_dict["confidence"]),
+                is_correct=bool(op_dict["is_correct"]),
+            )
+
+        # --- inspect_results: synthesize from available data ---
+        hardware = entry.get("hardware", "Unknown")
+        backend = entry.get("backend", "Unknown")
+        model_name = entry.get("model_name", "Unknown")
+        initial_log = entry.get("initial_log", "")
+        initial_snippet = entry.get("initial_snippet", "")
+
+        config_str = (
+            f"hardware: {hardware}\n"
+            f"backend: {backend}\n"
+            f"model: {model_name}\n"
+            f"root_cause_family: {entry.get('root_cause', 'unknown')}"
+        )
+        metrics_str = (
+            "error_count: 1\n"
+            "restart_attempts: 0\n"
+            "gpu_utilization: N/A\n"
+            "inference_latency: N/A"
+        )
+        inspect_results = InspectResult(
+            logs=initial_log if initial_log else "No detailed logs available.",
+            config=config_str,
+            snippet=initial_snippet if initial_snippet else "No code snippet available.",
+            metrics=metrics_str,
+        )
+
+        # --- specialist_followups: generate from opinion text ---
+        specialist_followups: dict[str, str] = {}
+        for name, op in specialist_opinions.items():
+            if op.is_correct:
+                specialist_followups[name] = (
+                    f"Confirmed: {op.opinion} "
+                    f"I stand by my earlier assessment with {op.confidence:.0%} confidence."
+                )
+            else:
+                specialist_followups[name] = (
+                    f"On further review, my initial assessment may not be the primary issue. "
+                    f"Original observation: {op.opinion}"
+                )
+
+        scenarios.append(Scenario(
+            id=entry["id"],
+            root_cause=entry["root_cause"],
+            correct_fix=entry["correct_fix"],
+            incident_ticket=entry.get("incident_ticket", ""),
+            hardware=hardware,
+            model_name=model_name,
+            backend=backend,
+            initial_log=initial_log,
+            initial_snippet=initial_snippet,
+            specialist_opinions=specialist_opinions,
+            inspect_results=inspect_results,
+            specialist_followups=specialist_followups,
+        ))
+
+    return scenarios
+
+
+# Load scraped scenarios (if the data file exists)
+_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+_SCRAPED_PATH = os.path.join(_DATA_DIR, "generated_scenarios_full.json")
+
+if os.path.exists(_SCRAPED_PATH):
+    _SCRAPED_SCENARIOS = load_scraped_scenarios(_SCRAPED_PATH)
+else:
+    _SCRAPED_SCENARIOS = []
+
+# 80/20 train/eval split for scraped scenarios
+_scraped_split = int(len(_SCRAPED_SCENARIOS) * 0.8)
+SCRAPED_TRAIN_SCENARIOS = _SCRAPED_SCENARIOS[:_scraped_split]
+SCRAPED_EVAL_SCENARIOS = _SCRAPED_SCENARIOS[_scraped_split:]
+
+# Combine hand-crafted and scraped
+SCENARIOS = _HANDCRAFTED_SCENARIOS + _SCRAPED_SCENARIOS
+
+# _01, _03, _04, _05 = train; _02, _06 = eval  (hand-crafted)
+HANDCRAFTED_TRAIN = [s for s in _HANDCRAFTED_SCENARIOS if s.id.endswith(("_01", "_03", "_04", "_05"))]
+HANDCRAFTED_EVAL = [s for s in _HANDCRAFTED_SCENARIOS if s.id.endswith(("_02", "_06"))]
+
+TRAIN_SCENARIOS = HANDCRAFTED_TRAIN + SCRAPED_TRAIN_SCENARIOS
+EVAL_SCENARIOS = HANDCRAFTED_EVAL + SCRAPED_EVAL_SCENARIOS
 
 
 def get_scenario(scenario_id: str | None = None, split: str = "train") -> Scenario:
@@ -1891,3 +3937,61 @@ def get_scenario(scenario_id: str | None = None, split: str = "train") -> Scenar
         raise ValueError(f"Unknown scenario: {scenario_id}")
     pool = TRAIN_SCENARIOS if split == "train" else EVAL_SCENARIOS
     return random.choice(pool)
+
+
+def randomize_specialist_opinions(
+    scenario: Scenario,
+) -> dict[str, SpecialistOpinion]:
+    """Return a new dict of specialist opinions with per-episode randomization.
+
+    - Randomly pick 1-2 specialists to have their correctness swapped
+      (a correct one becomes wrong, a wrong one becomes correct).
+    - Add noise to confidence scores (multiply by uniform(0.85, 1.15),
+      clamped to [0.3, 0.99]).
+    - The original scenario is NOT mutated.
+    """
+    names = list(scenario.specialist_opinions.keys())
+    correct_names = [n for n in names if scenario.specialist_opinions[n].is_correct]
+    incorrect_names = [n for n in names if not scenario.specialist_opinions[n].is_correct]
+
+    # Determine how many to swap (1 or 2), limited by pool sizes
+    max_swaps = min(len(correct_names), len(incorrect_names))
+    if max_swaps == 0:
+        num_swaps = 0
+    else:
+        num_swaps = random.randint(1, min(2, max_swaps))
+
+    # Pick which specialists get swapped
+    swap_correct = random.sample(correct_names, num_swaps) if num_swaps > 0 else []
+    swap_incorrect = random.sample(incorrect_names, num_swaps) if num_swaps > 0 else []
+
+    # Build swap mapping: correct[i] gets incorrect[i]'s opinion text, and vice versa
+    swap_pairs: dict[str, str] = {}
+    for c, ic in zip(swap_correct, swap_incorrect):
+        swap_pairs[c] = ic
+        swap_pairs[ic] = c
+
+    new_opinions: dict[str, SpecialistOpinion] = {}
+    for name in names:
+        orig = scenario.specialist_opinions[name]
+
+        if name in swap_pairs:
+            # Swap: take the opinion text from the partner, flip is_correct
+            partner = scenario.specialist_opinions[swap_pairs[name]]
+            opinion_text = partner.opinion
+            is_correct = not orig.is_correct
+        else:
+            opinion_text = orig.opinion
+            is_correct = orig.is_correct
+
+        # Add noise to confidence
+        noisy_confidence = orig.confidence * random.uniform(0.85, 1.15)
+        noisy_confidence = max(0.3, min(0.99, noisy_confidence))
+
+        new_opinions[name] = SpecialistOpinion(
+            opinion=opinion_text,
+            confidence=noisy_confidence,
+            is_correct=is_correct,
+        )
+
+    return new_opinions

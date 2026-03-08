@@ -1,0 +1,4 @@
+# Raw scraped data (too large for git)
+raw_triples*.json
+# Intermediate filtered data (can be regenerated)
+filtered_triples*.json

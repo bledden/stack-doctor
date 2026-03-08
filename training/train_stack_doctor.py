@@ -19,6 +19,9 @@ import json
 import os
 import sys
 import random
+import re
+
+import weave
 
 # ---------------------------------------------------------------------------
 # 1. Environment setup — add server to path for direct import
@@ -28,7 +31,10 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_DIR)
 
 from server.stack_doctor_environment import StackDoctorEnvironment
-from server.scenarios import SCENARIOS, TRAIN_SCENARIOS, EVAL_SCENARIOS
+from server.scenarios import (
+    SCENARIOS, TRAIN_SCENARIOS, EVAL_SCENARIOS,
+    HANDCRAFTED_TRAIN, SCRAPED_TRAIN_SCENARIOS,
+)
 from models import StackDoctorAction, StackDoctorObservation
 
 # ---------------------------------------------------------------------------
@@ -42,8 +48,8 @@ You receive an incident ticket with hardware/model/backend context, log excerpts
 You must output a JSON array of actions to investigate and then submit your diagnosis. Available actions:
   {"type":"inspect","target":"logs|config|snippet|metrics"}
   {"type":"ask_specialist","specialist":"runtime|dispatch|kernel|loader"}
-  {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping"}
-  {"type":"submit","root_cause":"arch_guard|backend_whitelist|runtime_loader|backend_selector|model_config|weight_layout","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping","justification":"short explanation of your reasoning"}
+  {"type":"apply_fix","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping|tune_memory_config|fix_quantization|fix_comm_config|update_driver_config"}
+  {"type":"submit","root_cause":"arch_guard|backend_whitelist|runtime_loader|backend_selector|model_config|weight_layout|memory_oom|quantization_error|distributed_comm|driver_compat","fix":"relax_arch_check|add_whitelist_entry|fix_runtime_path|switch_backend|update_model_config|fix_weight_mapping|tune_memory_config|fix_quantization|fix_comm_config|update_driver_config","justification":"short explanation of your reasoning"}
 
 Rules:
 - You have 6 steps max. Each inspect/ask costs -0.25. Wrong fix costs -2. Wrong submit costs -4 per field.
@@ -102,9 +108,12 @@ def build_dataset(scenarios, n_repeats=50):
 # 3. Reward functions
 # ---------------------------------------------------------------------------
 
+@weave.op()
 def extract_actions(text):
     """Extract JSON action array from model output."""
     text = text.strip()
+    # Strip Qwen3.5 thinking blocks before parsing
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     # Try to find JSON array in the text
     start = text.find("[")
     end = text.rfind("]")
@@ -125,6 +134,7 @@ def extract_actions(text):
         return None
 
 
+@weave.op()
 def valid_json_reward(completions, **kwargs):
     """Reward for producing valid JSON action array."""
     scores = []
@@ -140,6 +150,7 @@ def valid_json_reward(completions, **kwargs):
     return scores
 
 
+@weave.op()
 def environment_reward(completions, **kwargs):
     """Execute action plan against Stack Doctor and return episode reward."""
     scores = []
@@ -176,6 +187,7 @@ def environment_reward(completions, **kwargs):
     return scores
 
 
+@weave.op()
 def efficiency_reward(completions, **kwargs):
     """Bonus for shorter action plans that still submit."""
     scores = []
@@ -193,8 +205,96 @@ def efficiency_reward(completions, **kwargs):
     return scores
 
 
+@weave.op()
 def justification_reward(completions, **kwargs):
-    """Reward for including a justification in the submit action."""
+    """Reward for including a justification grounded in actual evidence."""
+    EVIDENCE_KEYWORDS = {
+        "log", "config", "metric", "snippet", "specialist",
+        "runtime", "dispatch", "kernel", "loader",
+    }
+    scores = []
+    for completion in completions:
+        response = completion[0]["content"] if isinstance(completion, list) else completion
+        actions = extract_actions(response)
+        if actions is None:
+            scores.append(-0.5)
+            continue
+        submit_actions = [a for a in actions if a.get("type") == "submit"]
+        if not submit_actions:
+            scores.append(-0.5)
+            continue
+        justification = submit_actions[-1].get("justification", "").strip()
+        if len(justification) < 10:
+            scores.append(-0.5)
+        elif any(kw in justification.lower() for kw in EVIDENCE_KEYWORDS):
+            scores.append(1.0)
+        else:
+            scores.append(0.5)
+    return scores
+
+
+# Family clusters: root causes that are conceptually close
+_FAMILY_CLUSTERS = [
+    {"arch_guard", "backend_whitelist"},          # GPU rejected by check
+    {"runtime_loader", "driver_compat"},          # system library issues
+    {"model_config", "weight_layout"},            # model loading issues
+    {"backend_selector", "quantization_error"},   # backend/precision issues
+    {"memory_oom", "distributed_comm"},           # resource issues
+]
+
+# Build a lookup: root_cause -> cluster index for O(1) access
+_CAUSE_TO_CLUSTER = {}
+for _idx, _cluster in enumerate(_FAMILY_CLUSTERS):
+    for _cause in _cluster:
+        _CAUSE_TO_CLUSTER[_cause] = _idx
+
+
+@weave.op()
+def partial_credit_reward(completions, **kwargs):
+    """Partial credit when root_cause is wrong but in the same family cluster."""
+    scores = []
+    scenario_ids = kwargs.get("scenario_id", [None] * len(completions))
+
+    for i, completion in enumerate(completions):
+        response = completion[0]["content"] if isinstance(completion, list) else completion
+        actions = extract_actions(response)
+        if actions is None:
+            scores.append(0.0)
+            continue
+
+        submit_actions = [a for a in actions if a.get("type") == "submit"]
+        if not submit_actions:
+            scores.append(0.0)
+            continue
+
+        predicted = submit_actions[-1].get("root_cause", "")
+
+        # Look up the ground-truth root cause from the scenario
+        sid = scenario_ids[i] if i < len(scenario_ids) else None
+        true_cause = None
+        if sid is not None:
+            for sc in SCENARIOS:
+                if sc.id == sid:
+                    true_cause = sc.root_cause
+                    break
+
+        if true_cause is None:
+            scores.append(0.0)
+            continue
+
+        if predicted == true_cause:
+            scores.append(1.0)
+        elif (_CAUSE_TO_CLUSTER.get(predicted) is not None
+              and _CAUSE_TO_CLUSTER.get(predicted) == _CAUSE_TO_CLUSTER.get(true_cause)):
+            scores.append(0.3)
+        else:
+            scores.append(0.0)
+    return scores
+
+
+@weave.op()
+def investigation_quality_reward(completions, **kwargs):
+    """Reward models that investigate before diagnosing, penalize blind guessing."""
     scores = []
     for completion in completions:
         response = completion[0]["content"] if isinstance(completion, list) else completion
@@ -202,15 +302,29 @@ def justification_reward(completions, **kwargs):
         if actions is None:
             scores.append(0.0)
             continue
-        submit_actions = [a for a in actions if a.get("type") == "submit"]
-        if not submit_actions:
+
+        # Count investigation steps (inspect or ask_specialist) before the first submit
+        investigation_steps = 0
+        for a in actions:
+            if not isinstance(a, dict):
+                continue
+            if a.get("type") == "submit":
+                break
+            if a.get("type") in ("inspect", "ask_specialist"):
+                investigation_steps += 1
+
+        has_submit = any(
+            isinstance(a, dict) and a.get("type") == "submit" for a in actions
+        )
+
+        if not has_submit:
             scores.append(0.0)
-            continue
-        justification = submit_actions[-1].get("justification", "")
-        if len(justification.strip()) >= 10:
-            scores.append(1.0)
+        elif investigation_steps == 0:
+            scores.append(-1.0)   # blind guess — penalize
+        elif investigation_steps <= 2:
+            scores.append(0.5)    # reasonable investigation
         else:
-            scores.append(-0.5)
+            scores.append(0.0)    # over-investigation — neutral
     return scores
 
 
@@ -224,15 +338,22 @@ def main():
     from trl import GRPOConfig, GRPOTrainer
     import torch
 
-    max_seq_length = 4096
-    lora_rank = 8
+    # Initialize Weave observability
+    weave.init("stack-doctor/grpo-training")
 
-    # Load model
+    max_seq_length = 8192  # larger budget — Qwen3.5 thinking tokens can be long
+    lora_rank = 16  # higher rank for 9B model
+
+    # Load model — Qwen3.5-9B (released 2026-03-02)
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name="unsloth/Qwen3-1.7B",
+        model_name="unsloth/Qwen3.5-9B",
         load_in_4bit=True,
         max_seq_length=max_seq_length,
     )
+
+    # Keep thinking mode enabled — chain-of-thought helps the model reason
+    # about conflicting specialist opinions and complex diagnostics.
+    # extract_actions() strips <think>...</think> before JSON parsing.
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -246,8 +367,12 @@ def main():
         random_state=42,
     )
 
-    # Build dataset
-    train_data = build_dataset(TRAIN_SCENARIOS, n_repeats=80)
+    # Build dataset — hand-crafted scenarios get more repeats (high quality),
+    # scraped scenarios get fewer repeats (lower quality, more numerous).
+    train_data_handcrafted = build_dataset(HANDCRAFTED_TRAIN, n_repeats=30)
+    train_data_scraped = build_dataset(SCRAPED_TRAIN_SCENARIOS, n_repeats=5)
+    train_data = train_data_handcrafted + train_data_scraped
+    random.shuffle(train_data)
     dataset = Dataset.from_list(train_data)
 
     # Compute prompt length from longest scenario
@@ -296,6 +421,8 @@ def main():
             environment_reward,
             efficiency_reward,
             justification_reward,
+            partial_credit_reward,
+            investigation_quality_reward,
         ],
         args=training_args,
         train_dataset=dataset,
