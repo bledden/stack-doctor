@@ -394,7 +394,9 @@ def main():
     print(f"Dataset size: {len(dataset)} episodes")
     print(f"Train scenarios: {len(TRAIN_SCENARIOS)}, Eval scenarios: {len(EVAL_SCENARIOS)}")
 
-    # GRPO config — H100 80GB has ~55GB free VRAM after model load
+    # GRPO config — Qwen3.5 VL model breaks with batch_size>1 on text-only
+    # (3D position encoding expects vision tokens). Use batch_size=1 with
+    # high gradient accumulation and more generations to compensate.
     training_args = GRPOConfig(
         temperature=1.0,
         learning_rate=2e-4,
@@ -403,9 +405,9 @@ def main():
         lr_scheduler_type="linear",
         optim="adamw_8bit",
         logging_steps=1,
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=2,
-        num_generations=4,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
+        num_generations=6,
         max_prompt_length=max_prompt_length,
         max_completion_length=max_completion_length,
         max_steps=300,
