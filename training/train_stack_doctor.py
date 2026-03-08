@@ -427,18 +427,15 @@ def main():
     max_seq_length = 8192
     lora_rank = 16
 
-    # Load model — Qwen3.5-9B (multimodal but we use text-only path)
+    # Load model — Qwen2.5-1.5B (small model to demonstrate learning curve)
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name="unsloth/Qwen3.5-9B",
+        model_name="unsloth/Qwen2.5-1.5B-Instruct",
         load_in_4bit=True,
         max_seq_length=max_seq_length,
     )
 
-    # Qwen3.5 VLProcessor wraps a text tokenizer — unwrap for encode() calls
+    # For VL models the tokenizer wraps a text tokenizer — unwrap for encode() calls
     text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
-
-    # Thinking mode — extract_actions() strips <think>...</think>
-    # before JSON parsing so chain-of-thought doesn't break action extraction.
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -451,10 +448,6 @@ def main():
         use_gradient_checkpointing="unsloth",
         random_state=42,
     )
-
-    # Patch VL model for text-only GRPO (fixes batching crash with num_generations > 2)
-    # Must be after get_peft_model so the patch targets the live PEFT-wrapped model.
-    patch_qwen35_text_only(model)
 
     # Build dataset — hand-crafted scenarios get more repeats (high quality),
     # scraped scenarios get fewer repeats (lower quality, more numerous).
@@ -474,23 +467,19 @@ def main():
         p = tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
         prompt_lengths.append(len(text_tokenizer.encode(p)))
     max_prompt_length = max(prompt_lengths) + 10
-    # Cap completion length — Qwen3.5 thinking mode needs ~1500 tokens for
-    # <think>...</think> chain-of-thought plus ~200 tokens for the JSON array.
-    # 1024 was too small: model hit the limit, clipped, produced no valid JSON,
-    # GRPO got zero gradient signal, and training collapsed.
-    max_completion_length = max(256, min(2048, max_seq_length - max_prompt_length))
+    # Qwen2.5-1.5B doesn't use thinking mode, so 1024 tokens is plenty for JSON output.
+    max_completion_length = max(256, min(1024, max_seq_length - max_prompt_length))
 
     print(f"Prompt length: ~{max_prompt_length} tokens")
     print(f"Completion budget: ~{max_completion_length} tokens")
     print(f"Dataset size: {len(dataset)} episodes")
     print(f"Train scenarios: {len(TRAIN_SCENARIOS)}, Eval scenarios: {len(EVAL_SCENARIOS)}")
 
-    # GRPO config — proven stable: num_generations=2, grad_accum=1.
-    # Unsloth's GRPO has a bug where gradient_accumulation > 1 causes
-    # completion_mask shape mismatches in masked_batch_mean.
+    # GRPO config — short run with small model to demonstrate learning curve.
+    # 50 steps, save every 10 so we get 5 points on the reward chart.
     training_args = GRPOConfig(
         temperature=1.0,
-        learning_rate=2e-4,
+        learning_rate=5e-5,
         weight_decay=0.001,
         warmup_ratio=0.1,
         lr_scheduler_type="linear",
@@ -501,8 +490,8 @@ def main():
         num_generations=2,
         max_prompt_length=max_prompt_length,
         max_completion_length=max_completion_length,
-        max_steps=300,
-        save_steps=50,
+        max_steps=50,
+        save_steps=10,
         report_to="none",
         output_dir="outputs",
     )
@@ -523,21 +512,14 @@ def main():
         train_dataset=dataset,
     )
 
-    # Resume from checkpoint if available
-    import glob
-    checkpoints = sorted(glob.glob("outputs/checkpoint-*"), key=os.path.getmtime)
-    if checkpoints:
-        resume_from = checkpoints[-1]
-        print(f"Resuming from checkpoint: {resume_from}")
-        trainer.train(resume_from_checkpoint=resume_from)
-    else:
-        print("Starting GRPO training from scratch...")
-        trainer.train()
+    # Fresh start — small model, short run to demonstrate learning curve
+    print("Starting GRPO training (Qwen2.5-1.5B, 50 steps)...")
+    trainer.train()
 
     # Save
-    model.save_pretrained("stack_doctor_lora")
-    tokenizer.save_pretrained("stack_doctor_lora")
-    print("Training complete. LoRA saved to stack_doctor_lora/")
+    model.save_pretrained("stack_doctor_lora_1.5b")
+    tokenizer.save_pretrained("stack_doctor_lora_1.5b")
+    print("Training complete. LoRA saved to stack_doctor_lora_1.5b/")
 
 
 if __name__ == "__main__":

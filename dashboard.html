@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stack Doctor — Incident War Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════
+   STACK DOCTOR — INCIDENT WAR ROOM
+   Aesthetic: Deep space mission control / HAL 9000 calm
+   ═══════════════════════════════════════════════════════ */
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-abyss: #060a11;
+  --bg-deep: #0a0f1a;
+  --bg-mid: #0f1623;
+  --bg-surface: #151d2e;
+  --bg-elevated: #1a2438;
+  --border-subtle: rgba(100, 180, 255, 0.08);
+  --border-active: rgba(0, 196, 255, 0.25);
+
+  --cyan: #00c4ff;
+  --cyan-bright: #40d4ff;
+  --cyan-dim: rgba(0, 196, 255, 0.15);
+  --cyan-glow: rgba(0, 196, 255, 0.4);
+  --amber: #f0a030;
+  --amber-dim: rgba(240, 160, 48, 0.15);
+  --amber-glow: rgba(240, 160, 48, 0.4);
+  --emerald: #00e676;
+  --emerald-dim: rgba(0, 230, 118, 0.12);
+  --emerald-glow: rgba(0, 230, 118, 0.35);
+  --coral: #ff3d5a;
+  --coral-dim: rgba(255, 61, 90, 0.12);
+
+  --text-primary: #d8e0ec;
+  --text-secondary: rgba(216, 224, 236, 0.55);
+  --text-tertiary: rgba(216, 224, 236, 0.3);
+
+  --font-display: 'Outfit', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', monospace;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --duration-slow: 800ms;
+  --duration-med: 400ms;
+  --duration-fast: 200ms;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg-abyss);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 80%, rgba(0, 100, 180, 0.06) 0%, transparent 70%),
+    radial-gradient(ellipse 60% 50% at 80% 20%, rgba(0, 160, 255, 0.04) 0%, transparent 60%),
+    radial-gradient(ellipse 100% 100% at 50% 50%, rgba(6, 10, 17, 0) 40%, rgba(0, 0, 0, 0.4) 100%);
+  pointer-events: none; z-index: 0;
+}
+
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
+  opacity: 0.6;
+  pointer-events: none; z-index: 0;
+}
+
+.grid-overlay {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(100, 180, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(100, 180, 255, 0.018) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+
+.app {
+  position: relative; z-index: 1;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+  padding: 16px 20px;
+  gap: 12px;
+}
+
+/* ══════════ HEADER ══════════ */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: linear-gradient(135deg, var(--bg-mid), var(--bg-surface));
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+
+.header-left { display: flex; align-items: center; gap: 14px; }
+
+.logo-mark {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--cyan), rgba(0, 196, 255, 0.5));
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 20px var(--cyan-dim), inset 0 1px 0 rgba(255,255,255,0.15);
+  animation: logoPulse 4s ease-in-out infinite;
+}
+.logo-mark svg { width: 18px; height: 18px; }
+
+@keyframes logoPulse {
+  0%, 100% { box-shadow: 0 0 20px var(--cyan-dim); }
+  50% { box-shadow: 0 0 30px var(--cyan-glow); }
+}
+
+.header-title { font-weight: 600; font-size: 15px; letter-spacing: 0.5px; color: var(--text-primary); }
+.header-subtitle { font-family: var(--font-mono); font-size: 11px; font-weight: 300; color: var(--text-secondary); letter-spacing: 0.3px; }
+
+.header-right { display: flex; align-items: center; gap: 20px; }
+.header-meta { text-align: right; }
+.header-meta-label { font-family: var(--font-mono); font-size: 9px; font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-tertiary); }
+.header-meta-value { font-family: var(--font-mono); font-size: 12px; font-weight: 400; color: var(--cyan); }
+
+.status-badge {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 1px; text-transform: uppercase;
+  padding: 5px 12px; border-radius: 20px;
+  background: var(--cyan-dim); color: var(--cyan);
+  border: 1px solid rgba(0, 196, 255, 0.2);
+  transition: all var(--duration-slow) var(--ease-out-expo);
+}
+.status-badge.warning { background: var(--amber-dim); color: var(--amber); border-color: rgba(240, 160, 48, 0.3); }
+.status-badge.success { background: var(--emerald-dim); color: var(--emerald); border-color: rgba(0, 230, 118, 0.3); }
+.status-badge.error { background: var(--coral-dim); color: var(--coral); border-color: rgba(255, 61, 90, 0.3); }
+
+/* ══════════ MAIN CONTENT ══════════ */
+.main { display: grid; grid-template-columns: 240px 1fr 280px; gap: 12px; min-height: 0; }
+
+.panel {
+  background: linear-gradient(180deg, rgba(15, 22, 35, 0.8), rgba(10, 15, 26, 0.9));
+  border: 1px solid var(--border-subtle); border-radius: 12px;
+  overflow: hidden; backdrop-filter: blur(12px);
+}
+
+.panel-header { padding: 12px 16px 8px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-subtle); }
+
+.panel-header-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow);
+  animation: dotPulse 3s ease-in-out infinite;
+}
+@keyframes dotPulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+
+.panel-header-title { font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-secondary); }
+
+/* ══════════ ARCHITECTURE DIAGRAM ══════════ */
+.arch-panel { display: flex; flex-direction: column; }
+
+.arch-body {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 20px 16px; gap: 0;
+}
+
+.arch-layer {
+  width: 100%; position: relative; padding: 14px;
+  background: var(--bg-deep); border: 1px solid var(--border-subtle); border-radius: 8px;
+  transition: all var(--duration-slow) var(--ease-out-expo); cursor: default;
+}
+
+.arch-layer::before {
+  content: ''; position: absolute; inset: -1px; border-radius: 9px;
+  background: transparent; opacity: 0;
+  transition: opacity var(--duration-slow) var(--ease-out-expo);
+  pointer-events: none; z-index: -1;
+}
+
+.arch-layer .layer-name {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-secondary);
+  transition: color var(--duration-slow) var(--ease-out-expo);
+}
+
+.arch-layer .layer-detail {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 300;
+  color: var(--text-tertiary); margin-top: 2px;
+  transition: color var(--duration-slow) var(--ease-out-expo);
+}
+
+.arch-layer.scanning {
+  border-color: rgba(0, 196, 255, 0.3);
+  background: linear-gradient(135deg, rgba(0, 196, 255, 0.06), var(--bg-deep));
+  box-shadow: 0 0 20px var(--cyan-dim), inset 0 0 20px rgba(0, 196, 255, 0.03);
+}
+.arch-layer.scanning .layer-name { color: var(--cyan); }
+.arch-layer.scanning::before { opacity: 1; background: linear-gradient(135deg, rgba(0, 196, 255, 0.08), transparent); }
+
+.arch-layer.identified {
+  border-color: rgba(240, 160, 48, 0.4);
+  background: linear-gradient(135deg, rgba(240, 160, 48, 0.08), var(--bg-deep));
+  box-shadow: 0 0 25px var(--amber-dim), inset 0 0 25px rgba(240, 160, 48, 0.04);
+  animation: identifiedPulse 2s ease-in-out infinite;
+}
+.arch-layer.identified .layer-name { color: var(--amber); }
+
+@keyframes identifiedPulse {
+  0%, 100% { box-shadow: 0 0 20px var(--amber-dim); }
+  50% { box-shadow: 0 0 35px rgba(240, 160, 48, 0.25); }
+}
+
+.arch-layer.resolved {
+  border-color: rgba(0, 230, 118, 0.3);
+  background: linear-gradient(135deg, rgba(0, 230, 118, 0.06), var(--bg-deep));
+  box-shadow: 0 0 20px var(--emerald-dim);
+}
+.arch-layer.resolved .layer-name { color: var(--emerald); }
+
+.arch-layer.error-state {
+  border-color: rgba(255, 61, 90, 0.3);
+  background: linear-gradient(135deg, rgba(255, 61, 90, 0.06), var(--bg-deep));
+  box-shadow: 0 0 20px var(--coral-dim);
+}
+.arch-layer.error-state .layer-name { color: var(--coral); }
+
+.arch-connector {
+  width: 1px; height: 12px;
+  background: linear-gradient(180deg, var(--border-active), transparent);
+  position: relative;
+  transition: background var(--duration-slow) var(--ease-out-expo);
+}
+
+.arch-connector .data-dot {
+  width: 3px; height: 3px; border-radius: 50%;
+  background: var(--cyan); position: absolute; left: -1px;
+  animation: flowDown 2s linear infinite; opacity: 0.6;
+}
+
+@keyframes flowDown {
+  0% { top: 0; opacity: 0; } 20% { opacity: 0.8; } 80% { opacity: 0.8; } 100% { top: 100%; opacity: 0; }
+}
+
+/* ══════════ INVESTIGATION LOG ══════════ */
+.log-panel { display: flex; flex-direction: column; }
+
+.log-body {
+  flex: 1; overflow-y: auto; padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 8px;
+  scrollbar-width: thin; scrollbar-color: rgba(100, 180, 255, 0.1) transparent;
+}
+
+.incident-card {
+  background: linear-gradient(135deg, rgba(0, 196, 255, 0.04), var(--bg-surface));
+  border: 1px solid rgba(0, 196, 255, 0.12); border-radius: 10px;
+  padding: 16px; margin-bottom: 4px;
+  animation: cardAppear 0.6s var(--ease-out-expo) both;
+}
+
+@keyframes cardAppear {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.incident-label { font-family: var(--font-mono); font-size: 9px; font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; color: var(--cyan); margin-bottom: 8px; }
+.incident-text { font-size: 13px; font-weight: 400; line-height: 1.6; color: var(--text-primary); }
+.incident-meta { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+.incident-meta-item { display: flex; flex-direction: column; gap: 2px; }
+.incident-meta-item .meta-label { font-family: var(--font-mono); font-size: 8px; font-weight: 500; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-tertiary); }
+.incident-meta-item .meta-value { font-family: var(--font-mono); font-size: 11px; font-weight: 400; color: var(--text-secondary); }
+
+.log-entry {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px; background: var(--bg-deep);
+  border: 1px solid var(--border-subtle); border-radius: 8px;
+  animation: entrySlideIn 0.5s var(--ease-out-expo) both;
+  transition: border-color var(--duration-med) ease;
+}
+
+@keyframes entrySlideIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.log-entry-icon {
+  width: 24px; height: 24px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; font-size: 11px;
+}
+.log-entry-icon.inspect { background: var(--cyan-dim); color: var(--cyan); border: 1px solid rgba(0, 196, 255, 0.2); }
+.log-entry-icon.specialist { background: rgba(160, 120, 255, 0.12); color: #a078ff; border: 1px solid rgba(160, 120, 255, 0.2); }
+.log-entry-icon.fix { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240, 160, 48, 0.2); }
+.log-entry-icon.submit { background: var(--emerald-dim); color: var(--emerald); border: 1px solid rgba(0, 230, 118, 0.2); }
+
+.log-entry-content { flex: 1; min-width: 0; }
+.log-entry-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; }
+
+.log-entry-type { font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 0.8px; text-transform: uppercase; }
+.log-entry-type.cyan { color: var(--cyan); }
+.log-entry-type.purple { color: #a078ff; }
+.log-entry-type.amber { color: var(--amber); }
+.log-entry-type.emerald { color: var(--emerald); }
+
+.log-entry-step { font-family: var(--font-mono); font-size: 9px; font-weight: 300; color: var(--text-tertiary); }
+
+.log-entry-text {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 300;
+  line-height: 1.55; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word;
+}
+
+.log-entry-reward { font-family: var(--font-mono); font-size: 10px; font-weight: 500; margin-top: 4px; }
+.log-entry-reward.positive { color: var(--emerald); }
+.log-entry-reward.negative { color: var(--coral); }
+
+/* ══════════ SPECIALISTS ══════════ */
+.specialists-panel { display: flex; flex-direction: column; }
+.specialists-body { flex: 1; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+
+.specialist-card {
+  background: var(--bg-deep); border: 1px solid var(--border-subtle); border-radius: 10px;
+  padding: 12px; transition: all var(--duration-slow) var(--ease-out-expo);
+  animation: cardAppear 0.5s var(--ease-out-expo) both;
+}
+.specialist-card.highlighted { border-color: rgba(160, 120, 255, 0.3); background: linear-gradient(135deg, rgba(160, 120, 255, 0.05), var(--bg-deep)); box-shadow: 0 0 20px rgba(160, 120, 255, 0.08); }
+.specialist-card.wrong { border-color: rgba(255, 61, 90, 0.15); opacity: 0.5; }
+.specialist-card.correct { border-color: rgba(0, 230, 118, 0.2); }
+
+.specialist-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+
+.specialist-name {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 1px; text-transform: uppercase; color: var(--text-secondary);
+  transition: color var(--duration-med) ease;
+}
+.specialist-card.highlighted .specialist-name { color: #a078ff; }
+.specialist-card.correct .specialist-name { color: var(--emerald); }
+.specialist-card.wrong .specialist-name { color: var(--coral); }
+
+.confidence-bar { width: 60px; height: 3px; background: rgba(255, 255, 255, 0.06); border-radius: 2px; overflow: hidden; }
+.confidence-fill { height: 100%; border-radius: 2px; background: var(--cyan); transition: width 1s var(--ease-out-expo), background var(--duration-med) ease; }
+.specialist-card.wrong .confidence-fill { background: var(--coral); }
+.specialist-card.correct .confidence-fill { background: var(--emerald); }
+
+.specialist-opinion { font-size: 11px; font-weight: 300; line-height: 1.5; color: var(--text-secondary); transition: opacity var(--duration-med) ease; }
+.specialist-card.wrong .specialist-opinion { opacity: 0.5; }
+
+.specialist-verdict { font-family: var(--font-mono); font-size: 9px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; margin-top: 8px; opacity: 0; transition: opacity var(--duration-med) ease; }
+.specialist-card.wrong .specialist-verdict, .specialist-card.correct .specialist-verdict { opacity: 1; }
+.specialist-card.wrong .specialist-verdict { color: var(--coral); }
+.specialist-card.correct .specialist-verdict { color: var(--emerald); }
+
+/* ══════════ FOOTER VITALS ══════════ */
+.footer { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+
+.vital {
+  background: linear-gradient(135deg, var(--bg-mid), var(--bg-surface));
+  border: 1px solid var(--border-subtle); border-radius: 10px;
+  padding: 10px 14px; display: flex; flex-direction: column; gap: 4px;
+  transition: border-color var(--duration-med) ease;
+}
+
+.vital-label { font-family: var(--font-mono); font-size: 9px; font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-tertiary); }
+
+.vital-value { font-family: var(--font-mono); font-size: 20px; font-weight: 300; color: var(--text-primary); transition: color var(--duration-med) ease; }
+.vital-value.cyan { color: var(--cyan); }
+.vital-value.amber { color: var(--amber); }
+.vital-value.emerald { color: var(--emerald); }
+.vital-value.coral { color: var(--coral); }
+
+.steps-dots { display: flex; gap: 5px; margin-top: 2px; }
+.step-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: all var(--duration-med) var(--ease-out-expo);
+}
+.step-dot.used { background: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 8px var(--cyan-dim); }
+.step-dot.current { background: var(--amber); border-color: var(--amber); box-shadow: 0 0 8px var(--amber-dim); animation: dotPulse 1.5s ease-in-out infinite; }
+
+/* ══════════ DIAGNOSIS OVERLAY ══════════ */
+.diagnosis-overlay {
+  position: fixed; inset: 0;
+  background: rgba(6, 10, 17, 0.85); backdrop-filter: blur(20px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100; opacity: 0; pointer-events: none;
+  transition: opacity 0.6s var(--ease-out-expo);
+}
+.diagnosis-overlay.visible { opacity: 1; pointer-events: auto; }
+
+.diagnosis-card {
+  background: linear-gradient(180deg, var(--bg-surface), var(--bg-deep));
+  border: 1px solid var(--border-active); border-radius: 20px;
+  padding: 40px 48px; max-width: 520px; width: 100%; text-align: center;
+  transform: scale(0.92) translateY(20px);
+  transition: transform 0.8s var(--ease-out-expo);
+  box-shadow: 0 0 60px rgba(0, 196, 255, 0.08), 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+.diagnosis-overlay.visible .diagnosis-card { transform: scale(1) translateY(0); }
+
+.diagnosis-title { font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 3px; text-transform: uppercase; color: var(--cyan); margin-bottom: 24px; }
+.diagnosis-result { display: flex; flex-direction: column; gap: 16px; margin-bottom: 28px; }
+
+.diagnosis-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; background: var(--bg-deep); border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+}
+
+.diagnosis-row-label { font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; color: var(--text-tertiary); }
+.diagnosis-row-value { font-family: var(--font-mono); font-size: 13px; font-weight: 400; }
+.diagnosis-row-value.correct { color: var(--emerald); }
+.diagnosis-row-value.wrong { color: var(--coral); }
+
+.diagnosis-reward { font-size: 48px; font-weight: 700; letter-spacing: -2px; margin-bottom: 8px; }
+.diagnosis-reward-label { font-family: var(--font-mono); font-size: 10px; font-weight: 400; letter-spacing: 1px; text-transform: uppercase; color: var(--text-tertiary); }
+
+/* ══════════ DEMO BUTTON ══════════ */
+.demo-btn {
+  position: fixed; bottom: 20px; right: 20px; z-index: 50;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  letter-spacing: 1px; text-transform: uppercase;
+  padding: 10px 20px; background: var(--bg-surface); color: var(--cyan);
+  border: 1px solid rgba(0, 196, 255, 0.3); border-radius: 8px;
+  cursor: pointer; transition: all var(--duration-fast) ease;
+}
+.demo-btn:hover { background: var(--cyan-dim); box-shadow: 0 0 20px var(--cyan-dim); }
+.demo-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.idle-prompt {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  height: 100%; gap: 12px; padding: 40px;
+}
+.idle-prompt .idle-icon {
+  width: 48px; height: 48px; border-radius: 12px;
+  background: var(--cyan-dim); display: flex; align-items: center; justify-content: center;
+  animation: logoPulse 4s ease-in-out infinite;
+}
+.idle-prompt .idle-icon svg { width: 24px; height: 24px; color: var(--cyan); }
+.idle-prompt .idle-text { font-size: 14px; font-weight: 400; color: var(--text-secondary); text-align: center; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(100, 180, 255, 0.15); border-radius: 4px; }
+
+@media (max-width: 900px) {
+  .main { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+  .arch-panel { display: none; }
+  .footer { grid-template-columns: repeat(3, 1fr); }
+}
+</style>
+</head>
+<body>
+<div class="grid-overlay"></div>
+
+<div class="app">
+  <header class="header">
+    <div class="header-left">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round">
+          <path d="M12 3v18M3 12h18M7 7l10 10M17 7L7 17"/>
+        </svg>
+      </div>
+      <div>
+        <div class="header-title">Stack Doctor</div>
+        <div class="header-subtitle">Incident War Room</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="header-meta">
+        <div class="header-meta-label">Scenario</div>
+        <div class="header-meta-value" id="scenarioId">—</div>
+      </div>
+      <div class="header-meta">
+        <div class="header-meta-label">Episode</div>
+        <div class="header-meta-value" id="episodeTime">00:00</div>
+      </div>
+      <div class="status-badge" id="statusBadge">Standby</div>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="panel arch-panel">
+      <div class="panel-header">
+        <div class="panel-header-dot"></div>
+        <div class="panel-header-title">Inference Stack</div>
+      </div>
+      <div class="arch-body" id="archBody">
+        <div class="arch-layer" data-layer="model" id="layer-model">
+          <div class="layer-name">Model</div>
+          <div class="layer-detail" id="detail-model">—</div>
+        </div>
+        <div class="arch-connector"><div class="data-dot"></div></div>
+        <div class="arch-layer" data-layer="kernel" id="layer-kernel">
+          <div class="layer-name">Kernel</div>
+          <div class="layer-detail">Attention / GEMM</div>
+        </div>
+        <div class="arch-connector"><div class="data-dot" style="animation-delay:-0.5s"></div></div>
+        <div class="arch-layer" data-layer="backend" id="layer-backend">
+          <div class="layer-name">Backend</div>
+          <div class="layer-detail" id="detail-backend">—</div>
+        </div>
+        <div class="arch-connector"><div class="data-dot" style="animation-delay:-1s"></div></div>
+        <div class="arch-layer" data-layer="runtime" id="layer-runtime">
+          <div class="layer-name">Runtime</div>
+          <div class="layer-detail">CUDA / ROCm</div>
+        </div>
+        <div class="arch-connector"><div class="data-dot" style="animation-delay:-1.5s"></div></div>
+        <div class="arch-layer" data-layer="memory" id="layer-memory">
+          <div class="layer-name">Memory</div>
+          <div class="layer-detail">HBM / KV Cache</div>
+        </div>
+        <div class="arch-connector"><div class="data-dot" style="animation-delay:-2s"></div></div>
+        <div class="arch-layer" data-layer="driver" id="layer-driver">
+          <div class="layer-name">Driver</div>
+          <div class="layer-detail" id="detail-driver">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel log-panel">
+      <div class="panel-header">
+        <div class="panel-header-dot"></div>
+        <div class="panel-header-title">Investigation Log</div>
+      </div>
+      <div class="log-body" id="logBody">
+        <div class="idle-prompt" id="idlePrompt">
+          <div class="idle-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+            </svg>
+          </div>
+          <div class="idle-text">Awaiting incident assignment.<br>Run demo or connect an agent.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel specialists-panel">
+      <div class="panel-header">
+        <div class="panel-header-dot"></div>
+        <div class="panel-header-title">Specialist Agents</div>
+      </div>
+      <div class="specialists-body" id="specialistsBody"></div>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="vital">
+      <div class="vital-label">Steps</div>
+      <div class="steps-dots" id="stepsDots">
+        <div class="step-dot"></div><div class="step-dot"></div><div class="step-dot"></div>
+        <div class="step-dot"></div><div class="step-dot"></div><div class="step-dot"></div>
+      </div>
+    </div>
+    <div class="vital">
+      <div class="vital-label">Reward</div>
+      <div class="vital-value" id="rewardValue">0.00</div>
+    </div>
+    <div class="vital">
+      <div class="vital-label">Fix Status</div>
+      <div class="vital-value" id="fixStatus" style="font-size:13px">Not Applied</div>
+    </div>
+    <div class="vital">
+      <div class="vital-label">Root Cause</div>
+      <div class="vital-value" id="rootCauseValue" style="font-size:13px">—</div>
+    </div>
+    <div class="vital">
+      <div class="vital-label">Diagnosis</div>
+      <div class="vital-value" id="diagnosisValue" style="font-size:13px">Pending</div>
+    </div>
+  </footer>
+</div>
+
+<div class="diagnosis-overlay" id="diagnosisOverlay">
+  <div class="diagnosis-card">
+    <div class="diagnosis-title">Diagnosis Submitted</div>
+    <div class="diagnosis-result" id="diagnosisResult"></div>
+    <div class="diagnosis-reward" id="diagnosisReward">+0.00</div>
+    <div class="diagnosis-reward-label">Episode Reward</div>
+  </div>
+</div>
+
+<button class="demo-btn" id="demoBtn">&#9654; Run Demo</button>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   STACK DOCTOR — WAR ROOM ENGINE
+   All DOM mutations use safe methods (textContent, createElement,
+   classList, setAttribute) — no innerHTML with untrusted data.
+   ═══════════════════════════════════════════════════════ */
+
+const ROOT_CAUSE_TO_LAYER = {
+  arch_guard: 'kernel', backend_whitelist: 'backend',
+  runtime_loader: 'runtime', backend_selector: 'backend',
+  model_config: 'model', weight_layout: 'model',
+  memory_oom: 'memory', quantization_error: 'kernel',
+  distributed_comm: 'memory', driver_compat: 'driver',
+};
+
+const INSPECT_TO_LAYER = {
+  logs: 'runtime', config: 'backend', snippet: 'kernel', metrics: 'memory',
+};
+
+const ACTION_ICONS = {
+  inspect: '\u2315', ask_specialist: '\u25C9', apply_fix: '\u26A1', submit: '\u2713',
+};
+
+let state = { step: 0, reward: 0, fixApplied: false, done: false, startTime: null, timerInterval: null };
+
+function startTimer() {
+  state.startTime = Date.now();
+  state.timerInterval = setInterval(function() {
+    var elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+    var m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+    var s = String(elapsed % 60).padStart(2, '0');
+    document.getElementById('episodeTime').textContent = m + ':' + s;
+  }, 1000);
+}
+
+function stopTimer() { if (state.timerInterval) clearInterval(state.timerInterval); }
+
+function updateSteps(step) {
+  var dots = document.querySelectorAll('.step-dot');
+  dots.forEach(function(dot, i) {
+    dot.className = 'step-dot';
+    if (i < step) dot.classList.add('used');
+    else if (i === step && !state.done) dot.classList.add('current');
+  });
+}
+
+function updateReward(delta) {
+  state.reward += delta;
+  var el = document.getElementById('rewardValue');
+  el.textContent = (state.reward >= 0 ? '+' : '') + state.reward.toFixed(2);
+  el.className = 'vital-value ' + (state.reward >= 0 ? 'emerald' : 'coral');
+}
+
+function setLayerState(layerId, className) {
+  var el = document.getElementById('layer-' + layerId);
+  if (!el) return;
+  el.className = 'arch-layer' + (className ? ' ' + className : '');
+}
+
+function clearAllLayers() {
+  document.querySelectorAll('.arch-layer').forEach(function(el) { el.className = 'arch-layer'; });
+}
+
+function setStatus(text, cls) {
+  var el = document.getElementById('statusBadge');
+  el.textContent = text;
+  el.className = 'status-badge' + (cls ? ' ' + cls : '');
+}
+
+/* ── Safe DOM log entry builder ── */
+function addLogEntry(opts) {
+  var idle = document.getElementById('idlePrompt');
+  if (idle) idle.remove();
+
+  var body = document.getElementById('logBody');
+  var entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.style.animationDelay = '0.05s';
+
+  var iconCls = opts.type === 'ask_specialist' ? 'specialist' : opts.type;
+  var typeCls = opts.type === 'inspect' ? 'cyan' :
+                opts.type === 'ask_specialist' ? 'purple' :
+                opts.type === 'apply_fix' ? 'amber' :
+                opts.type === 'submit' ? 'emerald' : '';
+
+  // Icon
+  var iconEl = document.createElement('div');
+  iconEl.className = 'log-entry-icon ' + iconCls;
+  iconEl.textContent = ACTION_ICONS[opts.type] || '\u2022';
+
+  // Content wrapper
+  var contentEl = document.createElement('div');
+  contentEl.className = 'log-entry-content';
+
+  // Header row
+  var headerEl = document.createElement('div');
+  headerEl.className = 'log-entry-header';
+  var typeEl = document.createElement('div');
+  typeEl.className = 'log-entry-type ' + typeCls;
+  typeEl.textContent = opts.label;
+  var stepEl = document.createElement('div');
+  stepEl.className = 'log-entry-step';
+  stepEl.textContent = 'Step ' + state.step + '/6';
+  headerEl.appendChild(typeEl);
+  headerEl.appendChild(stepEl);
+
+  // Text body
+  var textEl = document.createElement('div');
+  textEl.className = 'log-entry-text';
+  textEl.textContent = opts.text;
+
+  contentEl.appendChild(headerEl);
+  contentEl.appendChild(textEl);
+
+  // Reward tag
+  if (opts.reward !== undefined) {
+    var rewardEl = document.createElement('div');
+    rewardEl.className = 'log-entry-reward ' + (opts.reward >= 0 ? 'positive' : 'negative');
+    rewardEl.textContent = (opts.reward >= 0 ? '+' : '') + opts.reward.toFixed(2);
+    contentEl.appendChild(rewardEl);
+  }
+
+  entry.appendChild(iconEl);
+  entry.appendChild(contentEl);
+  body.appendChild(entry);
+  body.scrollTop = body.scrollHeight;
+}
+
+/* ── Incident card (safe DOM) ── */
+function addIncidentCard(sc) {
+  var idle = document.getElementById('idlePrompt');
+  if (idle) idle.remove();
+
+  var body = document.getElementById('logBody');
+  var card = document.createElement('div');
+  card.className = 'incident-card';
+
+  var label = document.createElement('div');
+  label.className = 'incident-label';
+  label.textContent = 'Incident Ticket';
+
+  var text = document.createElement('div');
+  text.className = 'incident-text';
+  text.textContent = sc.incident_ticket;
+
+  var meta = document.createElement('div');
+  meta.className = 'incident-meta';
+
+  var fields = [
+    ['Hardware', sc.hardware],
+    ['Model', sc.model_name],
+    ['Backend', sc.backend],
+  ];
+  fields.forEach(function(f) {
+    var item = document.createElement('div');
+    item.className = 'incident-meta-item';
+    var ml = document.createElement('div');
+    ml.className = 'meta-label';
+    ml.textContent = f[0];
+    var mv = document.createElement('div');
+    mv.className = 'meta-value';
+    mv.textContent = f[1];
+    item.appendChild(ml);
+    item.appendChild(mv);
+    meta.appendChild(item);
+  });
+
+  card.appendChild(label);
+  card.appendChild(text);
+  card.appendChild(meta);
+  body.appendChild(card);
+}
+
+/* ── Specialist cards (safe DOM) ── */
+function populateSpecialists(opinions) {
+  var body = document.getElementById('specialistsBody');
+  body.textContent = '';
+
+  var i = 0;
+  Object.keys(opinions).forEach(function(name) {
+    var data = opinions[name];
+    var card = document.createElement('div');
+    card.className = 'specialist-card';
+    card.id = 'specialist-' + name;
+    card.style.animationDelay = (i * 0.1) + 's';
+
+    var top = document.createElement('div');
+    top.className = 'specialist-top';
+    var nameEl = document.createElement('div');
+    nameEl.className = 'specialist-name';
+    nameEl.textContent = name;
+    var barWrap = document.createElement('div');
+    barWrap.className = 'confidence-bar';
+    var barFill = document.createElement('div');
+    barFill.className = 'confidence-fill';
+    barFill.style.width = (data.confidence * 100) + '%';
+    barWrap.appendChild(barFill);
+    top.appendChild(nameEl);
+    top.appendChild(barWrap);
+
+    var opinionEl = document.createElement('div');
+    opinionEl.className = 'specialist-opinion';
+    opinionEl.textContent = data.opinion;
+
+    var verdictEl = document.createElement('div');
+    verdictEl.className = 'specialist-verdict';
+
+    card.appendChild(top);
+    card.appendChild(opinionEl);
+    card.appendChild(verdictEl);
+    body.appendChild(card);
+    i++;
+  });
+}
+
+function highlightSpecialist(name) {
+  document.querySelectorAll('.specialist-card').forEach(function(c) { c.classList.remove('highlighted'); });
+  var card = document.getElementById('specialist-' + name);
+  if (card) card.classList.add('highlighted');
+}
+
+function markSpecialist(name, correct) {
+  var card = document.getElementById('specialist-' + name);
+  if (!card) return;
+  card.classList.remove('highlighted');
+  card.classList.add(correct ? 'correct' : 'wrong');
+  var verdict = card.querySelector('.specialist-verdict');
+  if (verdict) verdict.textContent = correct ? '\u2713 Reliable' : '\u2717 Unreliable';
+}
+
+/* ── Diagnosis overlay (safe DOM) ── */
+function showDiagnosis(d) {
+  var overlay = document.getElementById('diagnosisOverlay');
+  var result = document.getElementById('diagnosisResult');
+  var rewardEl = document.getElementById('diagnosisReward');
+
+  result.textContent = '';
+
+  var rows = [
+    ['Root Cause', d.rootCause, d.rcCorrect, d.correctRc],
+    ['Fix', d.fix, d.fixCorrect, d.correctFix],
+  ];
+  rows.forEach(function(r) {
+    var row = document.createElement('div');
+    row.className = 'diagnosis-row';
+    var lbl = document.createElement('div');
+    lbl.className = 'diagnosis-row-label';
+    lbl.textContent = r[0];
+    var val = document.createElement('div');
+    val.className = 'diagnosis-row-value ' + (r[2] ? 'correct' : 'wrong');
+    val.textContent = r[1] + (r[2] ? ' \u2713' : ' \u2717 \u2192 ' + r[3]);
+    row.appendChild(lbl);
+    row.appendChild(val);
+    result.appendChild(row);
+  });
+
+  rewardEl.textContent = (d.totalReward >= 0 ? '+' : '') + d.totalReward.toFixed(2);
+  rewardEl.style.color = d.totalReward >= 0 ? 'var(--emerald)' : 'var(--coral)';
+
+  overlay.classList.add('visible');
+}
+
+function resetState() {
+  state = { step: 0, reward: 0, fixApplied: false, done: false, startTime: null, timerInterval: null };
+  document.getElementById('logBody').textContent = '';
+  document.getElementById('specialistsBody').textContent = '';
+  document.getElementById('rewardValue').textContent = '0.00';
+  document.getElementById('rewardValue').className = 'vital-value';
+  document.getElementById('fixStatus').textContent = 'Not Applied';
+  document.getElementById('fixStatus').className = 'vital-value';
+  document.getElementById('rootCauseValue').textContent = '\u2014';
+  document.getElementById('rootCauseValue').className = 'vital-value';
+  document.getElementById('diagnosisValue').textContent = 'Pending';
+  document.getElementById('diagnosisValue').className = 'vital-value';
+  document.getElementById('scenarioId').textContent = '\u2014';
+  document.getElementById('episodeTime').textContent = '00:00';
+  document.getElementById('diagnosisOverlay').classList.remove('visible');
+  setStatus('Standby', '');
+  clearAllLayers();
+  updateSteps(0);
+  stopTimer();
+
+  // Re-add idle prompt
+  var logBody = document.getElementById('logBody');
+  var idle = document.createElement('div');
+  idle.className = 'idle-prompt';
+  idle.id = 'idlePrompt';
+  var icon = document.createElement('div');
+  icon.className = 'idle-icon';
+  icon.textContent = '\u23F3';
+  var txt = document.createElement('div');
+  txt.className = 'idle-text';
+  txt.textContent = 'Awaiting incident assignment.\nRun demo or connect an agent.';
+  idle.appendChild(icon);
+  idle.appendChild(txt);
+  logBody.appendChild(idle);
+}
+
+/* ═══════════════════════════════════════════
+   DEMO MODE — arch_guard_01 scenario
+   ═══════════════════════════════════════════ */
+var DEMO = {
+  id: 'arch_guard_01',
+  root_cause: 'arch_guard',
+  correct_fix: 'relax_arch_check',
+  incident_ticket: "FlashInfer attention kernel fails to launch on newly provisioned DGX Spark nodes. Error: 'Unsupported GPU architecture sm_121'. Identical model config works on H100 nodes.",
+  hardware: 'NVIDIA SM121 (DGX Spark)',
+  model_name: 'DeepSeek-V3-671B',
+  backend: 'FlashInfer 0.4',
+  specialist_opinions: {
+    runtime: { opinion: "CUDA runtime loaded successfully. No runtime issues detected.", confidence: 0.85 },
+    dispatch: { opinion: "Architecture check is blocking kernel dispatch. SM121 is not in the supported set despite being SM90-compatible.", confidence: 0.92 },
+    kernel: { opinion: "HMMA m16n8k16 instructions are available on SM121. This looks like a capability check issue.", confidence: 0.88 },
+    loader: { opinion: "Model weights loaded correctly. Weight layout is standard.", confidence: 0.80 },
+  },
+  inspect_logs: "[FlashInfer] GPU: NVIDIA GH200 (sm_121)\n[FlashInfer] CUDA version: 13.0\n[FlashInfer] is_supported_arch(121) = False\n[FlashInfer] Architecture check FAILED\n[CUDA] All CUDA operations nominal\n[System] GPU memory: 96GB available",
+  inspect_config: "gpu_architecture: sm_121\ncuda_version: 13.0\nflashinfer_version: 0.4.1\nattention_backend: flashinfer\nsupported_archs: [70, 75, 80, 86, 89, 90]",
+  followup_dispatch: "The dispatch table maps arch -> kernel. SM121 has no entry. Adding sm_12x family to the arch check should fix it.",
+};
+
+function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+
+async function runDemo() {
+  var btn = document.getElementById('demoBtn');
+  btn.disabled = true;
+  btn.textContent = '\u25CF Running';
+
+  resetState();
+  var sc = DEMO;
+
+  startTimer();
+  setStatus('Incident Received', 'warning');
+  document.getElementById('scenarioId').textContent = sc.id;
+  document.getElementById('detail-model').textContent = 'DeepSeek-V3';
+  document.getElementById('detail-backend').textContent = sc.backend;
+  document.getElementById('detail-driver').textContent = 'NVIDIA SM121';
+
+  addIncidentCard(sc);
+  populateSpecialists(sc.specialist_opinions);
+  await sleep(2500);
+
+  // Step 1: Inspect logs
+  state.step = 1;
+  updateSteps(1);
+  setStatus('Investigating', 'warning');
+  setLayerState('runtime', 'scanning');
+  addLogEntry({ type: 'inspect', label: 'Inspect Logs', reward: -0.25, text: sc.inspect_logs });
+  updateReward(-0.25);
+  await sleep(3000);
+
+  // Step 2: Inspect config
+  state.step = 2;
+  updateSteps(2);
+  setLayerState('runtime', '');
+  setLayerState('backend', 'scanning');
+  addLogEntry({ type: 'inspect', label: 'Inspect Config', reward: -0.25, text: sc.inspect_config });
+  updateReward(-0.25);
+  await sleep(2500);
+
+  // Step 3: Ask dispatch specialist
+  state.step = 3;
+  updateSteps(3);
+  setLayerState('backend', '');
+  setLayerState('kernel', 'identified');
+  highlightSpecialist('dispatch');
+  addLogEntry({ type: 'ask_specialist', label: 'Query: Dispatch', reward: -0.25, text: sc.followup_dispatch });
+  updateReward(-0.25);
+  document.getElementById('rootCauseValue').textContent = 'arch_guard';
+  document.getElementById('rootCauseValue').className = 'vital-value amber';
+  await sleep(3000);
+
+  // Step 4: Apply fix
+  state.step = 4;
+  updateSteps(4);
+  setStatus('Applying Fix', 'warning');
+  state.fixApplied = true;
+  setLayerState('kernel', 'resolved');
+  addLogEntry({ type: 'apply_fix', label: 'Apply Fix: relax_arch_check', reward: 3.0, text: 'Fix applied successfully. Systems recovering.' });
+  updateReward(3.0);
+  document.getElementById('fixStatus').textContent = '\u2713 Applied';
+  document.getElementById('fixStatus').className = 'vital-value emerald';
+
+  await sleep(600);
+  setLayerState('backend', 'resolved');
+  await sleep(400);
+  setLayerState('runtime', 'resolved');
+  await sleep(400);
+  setLayerState('model', 'resolved');
+  await sleep(400);
+  setLayerState('memory', 'resolved');
+  await sleep(400);
+  setLayerState('driver', 'resolved');
+  await sleep(1500);
+
+  // Step 5: Submit diagnosis
+  state.step = 5;
+  updateSteps(5);
+  state.done = true;
+  setStatus('Diagnosis Submitted', 'success');
+
+  var submitReward = 8.0 + 8.0 + 2.0 + 1.0;
+  addLogEntry({
+    type: 'submit', label: 'Submit Diagnosis', reward: submitReward,
+    text: 'Root cause: arch_guard \u2713\nFix: relax_arch_check \u2713\nJustification: Logs show sm_121 rejected by arch check. Dispatch specialist confirmed SM121 supports HMMA. Config shows hardcoded supported_archs list missing sm_12x family.',
+  });
+  updateReward(submitReward);
+
+  document.getElementById('diagnosisValue').textContent = '\u2713 Correct';
+  document.getElementById('diagnosisValue').className = 'vital-value emerald';
+
+  markSpecialist('runtime', false);
+  markSpecialist('dispatch', true);
+  markSpecialist('kernel', true);
+  markSpecialist('loader', false);
+
+  await sleep(1500);
+  stopTimer();
+
+  showDiagnosis({
+    rcCorrect: true, fixCorrect: true,
+    rootCause: 'arch_guard', fix: 'relax_arch_check',
+    correctRc: 'arch_guard', correctFix: 'relax_arch_check',
+    totalReward: state.reward,
+  });
+
+  await sleep(5000);
+  document.getElementById('diagnosisOverlay').classList.remove('visible');
+  btn.disabled = false;
+  btn.textContent = '\u25B6 Run Demo';
+}
+
+document.getElementById('demoBtn').addEventListener('click', runDemo);
+</script>
+</body>
+</html>
