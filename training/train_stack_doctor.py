@@ -234,7 +234,10 @@ def justification_reward(completions, **kwargs):
         if not submit_actions:
             scores.append(-0.5)
             continue
-        justification = submit_actions[-1].get("justification", "").strip()
+        justification = submit_actions[-1].get("justification", "")
+        if not isinstance(justification, str):
+            justification = str(justification) if justification else ""
+        justification = justification.strip()
         if len(justification) < 10:
             scores.append(-0.5)
         elif any(kw in justification.lower() for kw in EVIDENCE_KEYWORDS):
@@ -279,6 +282,11 @@ def partial_credit_reward(completions, **kwargs):
             continue
 
         predicted = submit_actions[-1].get("root_cause", "")
+        # Model may output root_cause as a list, dict, etc. — coerce to string.
+        if isinstance(predicted, list):
+            predicted = predicted[0] if predicted else ""
+        if not isinstance(predicted, str):
+            predicted = str(predicted)
 
         # Look up the ground-truth root cause from the scenario
         sid = scenario_ids[i] if i < len(scenario_ids) else None
