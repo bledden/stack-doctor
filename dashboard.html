@@ -915,21 +915,66 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 /* ══════════════════════════════════════════════
    LIVE ENVIRONMENT CONNECTION
    ══════════════════════════════════════════════ */
-var SERVER = { url: '' };
+var SERVER = { url: '', ws: null };
 
 function getServerUrl() { return document.getElementById('serverUrl').value.replace(/\/$/, ''); }
+function getWsUrl() {
+  var base = getServerUrl();
+  if (!base) {
+    // Same-origin: derive WS URL from current page
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + location.host + '/ws';
+  }
+  return base.replace(/^http/, 'ws') + '/ws';
+}
 function setConnStatus(text, cls) {
   var el = document.getElementById('connStatus');
   el.textContent = text; el.className = 'conn-status' + (cls ? ' ' + cls : '');
 }
 
-async function serverPost(path, body) {
-  var resp = await fetch(getServerUrl() + path, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {})
+/* WebSocket-based communication — maintains session state across reset/step */
+function wsConnect() {
+  return new Promise(function(resolve, reject) {
+    var url = getWsUrl();
+    var ws = new WebSocket(url);
+    ws.onopen = function() { SERVER.ws = ws; resolve(ws); };
+    ws.onerror = function(e) { reject(new Error('WebSocket connection failed')); };
+    ws.onclose = function() { SERVER.ws = null; };
   });
-  if (!resp.ok) throw new Error('Server error: ' + resp.status);
-  return resp.json();
+}
+
+function wsSend(type, data) {
+  return new Promise(function(resolve, reject) {
+    if (!SERVER.ws || SERVER.ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('WebSocket not connected')); return;
+    }
+    SERVER.ws.onmessage = function(evt) {
+      try {
+        var msg = JSON.parse(evt.data);
+        if (msg.type === 'error') { reject(new Error(msg.data && msg.data.message || 'Server error')); return; }
+        resolve(msg);
+      }
+      catch (e) { reject(new Error('Bad JSON from server')); }
+    };
+    SERVER.ws.send(JSON.stringify({ type: type, data: data || {} }));
+  });
+}
+
+function wsClose() {
+  if (SERVER.ws) { SERVER.ws.close(); SERVER.ws = null; }
+}
+
+/* Convenience wrappers — returns {observation, reward, done} from data envelope */
+async function serverReset(body) {
+  if (!SERVER.ws) await wsConnect();
+  var msg = await wsSend('reset', body || {});
+  return msg.data;  /* {observation, reward, done} */
+}
+
+async function serverStep(actionMessage) {
+  /* WS step format: {type: "step", data: {message: "..."}} — NOT wrapped in action */
+  var msg = await wsSend('step', { message: actionMessage });
+  return msg.data;  /* {observation, reward, done} */
 }
 
 function disableButtons() {
@@ -975,8 +1020,8 @@ async function runLive(mode) {
   disableButtons(); resetState(); setConnStatus('Connecting...', 'running');
 
   try {
-    // Step 0: Reset — get a real scenario from the live environment
-    var resetResp = await serverPost('/reset', {});
+    // Step 0: Reset — get a real scenario via WebSocket (stateful session)
+    var resetResp = await serverReset({});
     var obs = parseObs(resetResp.observation || resetResp);
     setConnStatus('Connected', 'connected');
     startTimer();
@@ -1006,11 +1051,14 @@ async function runLive(mode) {
     await sleep(6000);
     document.getElementById('diagnosisOverlay').classList.remove('visible');
   } catch (e) {
+    console.error('Live connection failed:', e);
+    wsClose();
     setConnStatus('Offline mode', 'running');
     await runOffline(mode);
     await sleep(6000);
     document.getElementById('diagnosisOverlay').classList.remove('visible');
   }
+  wsClose();
   enableButtons();
 }
 
@@ -1108,9 +1156,7 @@ async function runLiveUntrained(initObs) {
 
   // Send a deliberately wrong submit to the real environment
   state.step = 2; updateSteps(2);
-  var stepResp = await serverPost('/step', {
-    action: { message: '{"type":"submit","root_cause":"runtime_loader","fix":"fix_runtime_path","justification":"idk"}' }
-  });
+  var stepResp = await serverStep('{"type":"submit","root_cause":"runtime_loader","fix":"fix_runtime_path","justification":"idk"}');
   var obs = parseObs(stepResp.observation || stepResp);
   var stepReward = stepResp.reward !== undefined ? stepResp.reward : obs.reward;
   setConnStatus('Connected', 'connected');
@@ -1157,9 +1203,7 @@ async function runLiveTrained(initObs) {
   // Step 1: Inspect logs
   state.step = 1; updateSteps(1);
   setLayerState('runtime', 'scanning');
-  var step1 = await serverPost('/step', {
-    action: { message: '{"type":"inspect","target":"logs"}' }
-  });
+  var step1 = await serverStep('{"type":"inspect","target":"logs"}');
   var obs1 = parseObs(step1.observation || step1);
   var rew1 = step1.reward !== undefined ? step1.reward : obs1.reward;
   addLogEntry({ type: 'inspect', label: 'Inspect Logs', reward: rew1, text: obs1.output });
@@ -1169,9 +1213,7 @@ async function runLiveTrained(initObs) {
   // Step 2: Inspect config
   state.step = 2; updateSteps(2);
   setLayerState('runtime', ''); setLayerState('backend', 'scanning');
-  var step2 = await serverPost('/step', {
-    action: { message: '{"type":"inspect","target":"config"}' }
-  });
+  var step2 = await serverStep('{"type":"inspect","target":"config"}');
   var obs2 = parseObs(step2.observation || step2);
   var rew2 = step2.reward !== undefined ? step2.reward : obs2.reward;
   addLogEntry({ type: 'inspect', label: 'Inspect Config', reward: rew2, text: obs2.output });
@@ -1182,9 +1224,7 @@ async function runLiveTrained(initObs) {
   state.step = 3; updateSteps(3);
   setLayerState('backend', 'identified');
   highlightSpecialist('dispatch');
-  var step3 = await serverPost('/step', {
-    action: { message: '{"type":"ask_specialist","specialist":"dispatch"}' }
-  });
+  var step3 = await serverStep('{"type":"ask_specialist","specialist":"dispatch"}');
   var obs3 = parseObs(step3.observation || step3);
   var rew3 = step3.reward !== undefined ? step3.reward : obs3.reward;
   addLogEntry({ type: 'ask_specialist', label: 'Query: Dispatch', reward: rew3, text: obs3.output });
@@ -1206,9 +1246,7 @@ async function runLiveTrained(initObs) {
   document.getElementById('rootCauseValue').className = 'vital-value amber';
 
   // Apply fix first
-  var step4 = await serverPost('/step', {
-    action: { message: JSON.stringify({ type: 'apply_fix', fix: guessFix }) }
-  });
+  var step4 = await serverStep(JSON.stringify({ type: 'apply_fix', fix: guessFix }));
   var obs4 = parseObs(step4.observation || step4);
   var rew4 = step4.reward !== undefined ? step4.reward : obs4.reward;
   var fixWorked = rew4 > 0;
@@ -1227,9 +1265,7 @@ async function runLiveTrained(initObs) {
   var isDone4 = step4.done !== undefined ? step4.done : obs4.done;
   if (!isDone4) {
     state.step = 5; updateSteps(5);
-    var step5 = await serverPost('/step', {
-      action: { message: JSON.stringify({ type: 'submit', root_cause: guessRc, fix: guessFix, justification: justification }) }
-    });
+    var step5 = await serverStep(JSON.stringify({ type: 'submit', root_cause: guessRc, fix: guessFix, justification: justification }));
     var obs5 = parseObs(step5.observation || step5);
     var rew5 = step5.reward !== undefined ? step5.reward : obs5.reward;
     addLogEntry({ type: 'submit', label: 'Submit Diagnosis', reward: rew5, text: obs5.output });
