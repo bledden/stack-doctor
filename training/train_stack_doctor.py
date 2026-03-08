@@ -440,9 +440,6 @@ def main():
     # Thinking mode — extract_actions() strips <think>...</think>
     # before JSON parsing so chain-of-thought doesn't break action extraction.
 
-    # Patch VL model for text-only GRPO (fixes batching crash with num_generations > 2)
-    patch_qwen35_text_only(model)
-
     model = FastLanguageModel.get_peft_model(
         model,
         r=lora_rank,
@@ -454,6 +451,10 @@ def main():
         use_gradient_checkpointing="unsloth",
         random_state=42,
     )
+
+    # Patch VL model for text-only GRPO (fixes batching crash with num_generations > 2)
+    # Must be after get_peft_model so the patch targets the live PEFT-wrapped model.
+    patch_qwen35_text_only(model)
 
     # Build dataset — hand-crafted scenarios get more repeats (high quality),
     # scraped scenarios get fewer repeats (lower quality, more numerous).
@@ -475,17 +476,16 @@ def main():
     max_prompt_length = max(prompt_lengths) + 10
     # Cap completion length — model outputs JSON arrays (~100-500 tokens).
     # Large completion budgets waste memory and can cause padding mismatches.
-    max_completion_length = min(1024, max_seq_length - max_prompt_length)
+    max_completion_length = max(256, min(1024, max_seq_length - max_prompt_length))
 
     print(f"Prompt length: ~{max_prompt_length} tokens")
     print(f"Completion budget: ~{max_completion_length} tokens")
     print(f"Dataset size: {len(dataset)} episodes")
     print(f"Train scenarios: {len(TRAIN_SCENARIOS)}, Eval scenarios: {len(EVAL_SCENARIOS)}")
 
-    # GRPO config — Qwen3.5 VL model with text-only patch.
-    # num_generations=2 is the known-stable config for this VL model.
-    # Unsloth overrides batch_size to num_generations, so effective batch
-    # per step = num_generations * gradient_accumulation_steps.
+    # GRPO config — proven stable: num_generations=2, grad_accum=1.
+    # Unsloth's GRPO has a bug where gradient_accumulation > 1 causes
+    # completion_mask shape mismatches in masked_batch_mean.
     training_args = GRPOConfig(
         temperature=1.0,
         learning_rate=2e-4,
@@ -495,7 +495,7 @@ def main():
         optim="adamw_8bit",
         logging_steps=1,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=1,
         num_generations=2,
         max_prompt_length=max_prompt_length,
         max_completion_length=max_completion_length,
