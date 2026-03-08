@@ -468,6 +468,7 @@ canvas { width: 100% !important; height: 100% !important; }
     <input type="text" id="serverUrl" value="http://localhost:8000" class="server-input" placeholder="Server URL">
     <button class="ctrl-btn primary" id="demoBtn" onclick="runLive('untrained')">&#9654; Untrained Model</button>
     <button class="ctrl-btn primary" id="demoBtn2" onclick="runLive('trained')" style="background:rgba(0,230,118,0.1);border-color:rgba(0,230,118,0.25);color:var(--emerald);">&#9654; After GRPO</button>
+    <button class="ctrl-btn primary" id="demoBtn3" onclick="runLiveModel()" style="background:rgba(240,160,48,0.1);border-color:rgba(240,160,48,0.25);color:var(--amber);">&#9654; Live Model Inference</button>
     <button class="ctrl-btn secondary" id="resetBtn" onclick="resetState()">&#8634; Reset</button>
     <span id="connStatus" class="conn-status">Disconnected</span>
   </div>
@@ -978,14 +979,15 @@ async function serverStep(actionMessage) {
 }
 
 function disableButtons() {
-  var btn = document.getElementById('demoBtn'); var btn2 = document.getElementById('demoBtn2');
-  btn.disabled = true; btn2.disabled = true;
-  btn.textContent = '\u25CF Running'; btn2.textContent = '\u25CF Running';
+  var btn = document.getElementById('demoBtn'); var btn2 = document.getElementById('demoBtn2'); var btn3 = document.getElementById('demoBtn3');
+  btn.disabled = true; btn2.disabled = true; btn3.disabled = true;
+  btn.textContent = '\u25CF Running'; btn2.textContent = '\u25CF Running'; btn3.textContent = '\u25CF Running';
 }
 function enableButtons() {
-  var btn = document.getElementById('demoBtn'); var btn2 = document.getElementById('demoBtn2');
+  var btn = document.getElementById('demoBtn'); var btn2 = document.getElementById('demoBtn2'); var btn3 = document.getElementById('demoBtn3');
   btn.disabled = false; btn.textContent = '\u25B6 Untrained Model';
   btn2.disabled = false; btn2.textContent = '\u25B6 After GRPO';
+  btn3.disabled = false; btn3.textContent = '\u25B6 Live Model Inference';
 }
 
 /* Map root_cause to a layer name for the architecture diagram */
@@ -1296,6 +1298,144 @@ async function runLiveTrained(initObs) {
   } else {
     state.done = true; stopTimer();
   }
+}
+
+/* ══════════════════════════════════════════════
+   LIVE MODEL INFERENCE — real Qwen 1.5B via MLX
+   ══════════════════════════════════════════════ */
+var INFERENCE_URL = 'http://localhost:8001';
+
+function extractActionsJS(text) {
+  text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  var start = text.indexOf('['), end = text.lastIndexOf(']');
+  if (start !== -1 && end > start) {
+    try { var a = JSON.parse(text.slice(start, end+1)); if (Array.isArray(a)) return a.filter(function(x){return typeof x==='object';}); } catch(e) {}
+  }
+  try { var a = JSON.parse(text); if (Array.isArray(a)) return a.filter(function(x){return typeof x==='object';}); if (typeof a === 'object') return [a]; } catch(e) {}
+  return null;
+}
+
+async function runLiveModel() {
+  disableButtons(); resetState(); setConnStatus('Connecting...', 'running');
+
+  try {
+    // Reset environment via WebSocket
+    var resetResp = await serverReset({});
+    var obs = parseObs(resetResp.observation || resetResp);
+    setConnStatus('Connected', 'connected');
+    startTimer();
+    setStatus('Incident Received', 'warning');
+
+    document.getElementById('scenarioId').textContent = (obs.meta && obs.meta.scenario_id) || 'live';
+    document.getElementById('detail-model').textContent = obs.model;
+    document.getElementById('detail-backend').textContent = obs.backend;
+    document.getElementById('detail-driver').textContent = obs.hardware;
+
+    addIncidentCard({ incident_ticket: obs.ticket, hardware: obs.hardware, model_name: obs.model, backend: obs.backend });
+    populateSpecialists(obs.specialists);
+    await sleep(1000);
+
+    // Build prompt from the real observation
+    var opsStr = '';
+    for (var name in obs.specialists) {
+      var o = obs.specialists[name];
+      opsStr += '  ' + name + ': ' + o.opinion + ' (confidence: ' + o.confidence + ')\n';
+    }
+    var userPrompt = 'INCIDENT: ' + obs.ticket + '\nHardware: ' + obs.hardware + ' | Model: ' + obs.model + ' | Backend: ' + obs.backend + '\nLOG:\n' + obs.log + '\nSPECIALISTS:\n' + opsStr + '\nInvestigate and submit your diagnosis as a JSON action array.';
+
+    // Call the inference server
+    setStatus('Model Thinking...', 'warning');
+    addLogEntry({ type: 'inspect', label: 'Qwen 1.5B Generating...', reward: 0, text: 'Sending scenario to local MLX model for inference...' });
+
+    var genResp = await fetch(INFERENCE_URL + '/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: userPrompt, max_tokens: 512 })
+    }).then(function(r) { return r.json(); });
+
+    var modelOutput = genResp.text;
+    var genTime = genResp.gen_time;
+
+    // Show what the model actually said
+    addLogEntry({ type: 'inspect', label: 'Model Output (' + genTime.toFixed(1) + 's)', reward: 0, text: modelOutput.slice(0, 500) });
+    await sleep(500);
+
+    // Parse the model's actions
+    var actions = extractActionsJS(modelOutput);
+    if (!actions || actions.length === 0) {
+      addLogEntry({ type: 'submit', label: 'Parse Failed', reward: -5, text: 'Could not parse model output as JSON actions.\nRaw: ' + modelOutput.slice(0, 200) });
+      updateReward(-5);
+      state.done = true; setStatus('Parse Error', 'error'); stopTimer();
+      enableButtons(); wsClose(); return;
+    }
+
+    setStatus('Executing Actions', 'warning');
+
+    // Execute each action against the live environment
+    var done = false;
+    var lastOutput = '';
+    for (var i = 0; i < actions.length && !done; i++) {
+      var action = actions[i];
+      var aType = action.type || '?';
+      state.step = i + 1; updateSteps(i + 1);
+
+      // Visual feedback
+      if (aType === 'inspect') setLayerState('runtime', 'scanning');
+      if (aType === 'ask_specialist') { highlightSpecialist(action.specialist || 'dispatch'); }
+      if (aType === 'apply_fix') setLayerState('backend', 'identified');
+      if (aType === 'submit') { setStatus('Diagnosing', 'warning'); document.getElementById('rootCauseValue').textContent = action.root_cause || '?'; }
+
+      var stepResp = await serverStep(JSON.stringify(action));
+      var stepObs = parseObs(stepResp.observation || stepResp);
+      var rew = stepResp.reward !== undefined ? stepResp.reward : stepObs.reward;
+      done = stepResp.done !== undefined ? stepResp.done : stepObs.done;
+
+      var label = aType;
+      if (aType === 'inspect') label = 'Inspect: ' + (action.target || '?');
+      if (aType === 'ask_specialist') label = 'Query: ' + (action.specialist || '?');
+      if (aType === 'apply_fix') label = 'Fix: ' + (action.fix || '?');
+      if (aType === 'submit') label = 'Submit Diagnosis';
+
+      addLogEntry({ type: aType, label: label, reward: rew, text: stepObs.output });
+      updateReward(rew);
+      lastOutput = stepObs.output;
+      await sleep(1200);
+    }
+
+    // Show final diagnosis
+    state.done = true; stopTimer();
+    if (lastOutput.indexOf('DIAGNOSIS SUBMITTED') !== -1 || lastOutput.indexOf('Root cause') !== -1) {
+      var rcCorrect = lastOutput.indexOf('CORRECT') !== -1 && lastOutput.split('Root cause')[1] && lastOutput.split('Root cause')[1].split('\n')[0].indexOf('CORRECT') !== -1;
+      setStatus('Diagnosis Submitted', rcCorrect ? 'success' : 'error');
+      document.getElementById('diagnosisValue').textContent = rcCorrect ? '\u2713 Correct' : '\u2717 Incorrect';
+      document.getElementById('diagnosisValue').className = 'vital-value ' + (rcCorrect ? 'emerald' : 'coral');
+
+      var submitAction = actions.find(function(a) { return a.type === 'submit'; }) || {};
+      var correctRc = submitAction.root_cause || '?';
+      var correctFix = submitAction.fix || '?';
+      var rcWrong = lastOutput.match(/WRONG \(was: (\w+)\)/);
+      if (rcWrong) correctRc = rcWrong[1];
+      var fixWrong = lastOutput.match(/Fix:.*WRONG \(was: (\w+)\)/);
+      if (fixWrong) correctFix = fixWrong[1];
+
+      showDiagnosis({
+        rcCorrect: rcCorrect && !rcWrong, fixCorrect: !fixWrong,
+        rootCause: submitAction.root_cause || '?', fix: submitAction.fix || '?',
+        correctRc: correctRc, correctFix: correctFix,
+        totalReward: state.reward
+      });
+    } else {
+      setStatus('Episode Ended', 'error');
+    }
+
+    await sleep(6000);
+    document.getElementById('diagnosisOverlay').classList.remove('visible');
+
+  } catch (e) {
+    console.error('Live model error:', e);
+    setConnStatus('Error: ' + e.message, 'error');
+    setStatus('Error', 'error');
+  }
+  wsClose(); enableButtons();
 }
 
 /* Root cause inference from observation text — pattern matching on known signatures */
