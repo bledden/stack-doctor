@@ -253,8 +253,9 @@ class StackDoctorEnvironment(Environment):
         remaining = MAX_STEPS - ep.step_count
         if remaining <= 0 and not ep.done:
             ep.done = True
-            reward -= 4.0
-            ep.cumulative_reward += -4.0
+            timeout_penalty = -4.0
+            reward += timeout_penalty
+            ep.cumulative_reward += timeout_penalty
             output += "\n\n[EPISODE OVER] Max steps reached without submission. Auto-fail. Reward: -4"
 
         return StackDoctorObservation(

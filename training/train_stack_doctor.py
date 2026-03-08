@@ -474,9 +474,11 @@ def main():
         p = tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
         prompt_lengths.append(len(text_tokenizer.encode(p)))
     max_prompt_length = max(prompt_lengths) + 10
-    # Cap completion length — model outputs JSON arrays (~100-500 tokens).
-    # Large completion budgets waste memory and can cause padding mismatches.
-    max_completion_length = max(256, min(1024, max_seq_length - max_prompt_length))
+    # Cap completion length — Qwen3.5 thinking mode needs ~1500 tokens for
+    # <think>...</think> chain-of-thought plus ~200 tokens for the JSON array.
+    # 1024 was too small: model hit the limit, clipped, produced no valid JSON,
+    # GRPO got zero gradient signal, and training collapsed.
+    max_completion_length = max(256, min(2048, max_seq_length - max_prompt_length))
 
     print(f"Prompt length: ~{max_prompt_length} tokens")
     print(f"Completion budget: ~{max_completion_length} tokens")
